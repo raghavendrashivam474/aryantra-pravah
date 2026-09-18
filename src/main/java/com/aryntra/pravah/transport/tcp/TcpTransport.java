@@ -13,6 +13,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -21,6 +22,7 @@ import java.util.logging.Logger;
  * TCP-based transport implementation of {@link Transport}.
  * Uses standard Java networking (ServerSocket and Socket) to provide
  * connection lifecycle and raw byte transmission.
+ * Supports multiple concurrent peer connections and failure-safe lifecycle.
  */
 public class TcpTransport implements Transport {
 
@@ -31,14 +33,29 @@ public class TcpTransport implements Transport {
     private final String host;
     private final int configuredPort;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final ConcurrentHashMap<String, TcpConnection> connections = new ConcurrentHashMap<>();
 
     private ServerSocket serverSocket;
     private Thread acceptThread;
-    private Thread readerThread;
 
     private volatile TransportListener listener;
-    private volatile Socket activeSocket;
-    private volatile OutputStream activeOutputStream;
+
+    /**
+     * Internal container representing an active TCP connection.
+     */
+    private static class TcpConnection {
+        final String id;
+        final Socket socket;
+        final OutputStream outputStream;
+        final Thread readerThread;
+
+        TcpConnection(String id, Socket socket, OutputStream outputStream, Thread readerThread) {
+            this.id = id;
+            this.socket = socket;
+            this.outputStream = outputStream;
+            this.readerThread = readerThread;
+        }
+    }
 
     public TcpTransport(int port) {
         this("127.0.0.1", port);
@@ -94,17 +111,15 @@ public class TcpTransport implements Transport {
         closeQuietly(serverSocket);
         serverSocket = null;
 
-        // Close active connection socket and streams
-        closeActiveConnection();
+        // Close and clean up all active connections
+        for (String id : java.util.Collections.list(connections.keys())) {
+            closeConnection(id);
+        }
+        connections.clear();
 
         if (acceptThread != null) {
             acceptThread.interrupt();
             acceptThread = null;
-        }
-
-        if (readerThread != null) {
-            readerThread.interrupt();
-            readerThread = null;
         }
 
         LOGGER.info("TcpTransport stopped");
@@ -116,21 +131,25 @@ public class TcpTransport implements Transport {
     }
 
     @Override
-    public synchronized void send(String destinationId, byte[] payload) {
+    public void send(String destinationId, byte[] payload) {
         if (!running.get()) {
             throw new PravahException("Cannot send payload: TcpTransport is not running");
         }
         Objects.requireNonNull(payload, "payload must not be null");
 
-        if (activeSocket == null || activeSocket.isClosed() || activeOutputStream == null) {
+        TcpConnection conn = lookupConnection(destinationId);
+        if (conn == null || conn.socket.isClosed()) {
             throw new PravahException("Cannot send payload: No active TCP connection to " + destinationId);
         }
 
         try {
-            activeOutputStream.write(payload);
-            activeOutputStream.flush();
+            synchronized (conn) {
+                conn.outputStream.write(payload);
+                conn.outputStream.flush();
+            }
         } catch (IOException e) {
-            throw new PravahException("Failed to send payload over TCP", e);
+            closeConnection(conn.id);
+            throw new PravahException("Failed to send payload over TCP to " + destinationId, e);
         }
     }
 
@@ -163,8 +182,17 @@ public class TcpTransport implements Transport {
         return configuredPort;
     }
 
-    public synchronized boolean isConnected() {
-        return activeSocket != null && activeSocket.isConnected() && !activeSocket.isClosed();
+    public boolean isConnected() {
+        for (TcpConnection conn : connections.values()) {
+            if (conn.socket != null && !conn.socket.isClosed()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public int getConnectionCount() {
+        return connections.size();
     }
 
     private void acceptLoop() {
@@ -191,25 +219,24 @@ public class TcpTransport implements Transport {
     }
 
     private synchronized void attachActiveSocket(Socket socket) throws IOException {
-        closeActiveConnection();
-        this.activeSocket = socket;
-        this.activeOutputStream = socket.getOutputStream();
+        String id = socket.getRemoteSocketAddress() != null
+                ? socket.getRemoteSocketAddress().toString()
+                : "unknown-" + System.nanoTime();
 
-        readerThread = new Thread(this::readLoop, "TcpTransport-Reader-" + socket.getPort());
-        readerThread.setDaemon(true);
-        readerThread.start();
+        // Ensure any existing connection with the identical ID is cleaned up first
+        closeConnection(id);
+
+        OutputStream os = socket.getOutputStream();
+        Thread rThread = new Thread(() -> readLoop(socket, id), "TcpTransport-Reader-" + socket.getPort());
+        rThread.setDaemon(true);
+
+        TcpConnection conn = new TcpConnection(id, socket, os, rThread);
+        connections.put(id, conn);
+        rThread.start();
     }
 
-    private void readLoop() {
-        Socket socket = this.activeSocket;
-        if (socket == null) {
-            return;
-        }
-
+    private void readLoop(Socket socket, String id) {
         byte[] buffer = new byte[BUFFER_SIZE];
-        String senderId = socket.getRemoteSocketAddress() != null 
-                ? socket.getRemoteSocketAddress().toString() 
-                : "unknown";
 
         try (InputStream inputStream = socket.getInputStream()) {
             while (running.get() && !socket.isClosed()) {
@@ -223,7 +250,7 @@ public class TcpTransport implements Transport {
                     TransportListener currentListener = this.listener;
                     if (currentListener != null) {
                         try {
-                            currentListener.onDataReceived(senderId, receivedData);
+                            currentListener.onDataReceived(id, receivedData);
                         } catch (Exception ex) {
                             LOGGER.log(Level.WARNING, "Error in TransportListener callback", ex);
                         }
@@ -234,29 +261,50 @@ public class TcpTransport implements Transport {
             // Socket closed during stop or disconnect
         } catch (IOException e) {
             if (running.get()) {
-                LOGGER.log(Level.FINE, "TCP read error: " + e.getMessage());
+                LOGGER.log(Level.FINE, "TCP read error on connection " + id + ": " + e.getMessage());
             }
         } finally {
-            synchronized (this) {
-                if (this.activeSocket == socket) {
-                    closeActiveConnection();
-                }
+            closeConnection(id);
+        }
+    }
+
+    private void closeConnection(String id) {
+        if (id == null) return;
+        TcpConnection conn = connections.remove(id);
+        if (conn != null) {
+            closeQuietly(conn.outputStream);
+            closeQuietly(conn.socket);
+            if (conn.readerThread != null && Thread.currentThread() != conn.readerThread) {
+                conn.readerThread.interrupt();
             }
         }
     }
 
-    private synchronized void closeActiveConnection() {
-        if (activeOutputStream != null) {
-            try {
-                activeOutputStream.close();
-            } catch (IOException ignored) {
+    private TcpConnection lookupConnection(String destinationId) {
+        if (destinationId == null) {
+            return null;
+        }
+
+        // 1. Direct exact match
+        TcpConnection conn = connections.get(destinationId);
+        if (conn != null) {
+            return conn;
+        }
+
+        // 2. Normalization match (handle leading slashes or formatting differences)
+        String targetNormalized = destinationId.replace("/", "");
+        for (String key : connections.keySet()) {
+            if (key.replace("/", "").equals(targetNormalized)) {
+                return connections.get(key);
             }
-            activeOutputStream = null;
         }
-        if (activeSocket != null) {
-            closeQuietly(activeSocket);
-            activeSocket = null;
+
+        // 3. Fallback: if there is exactly 1 connection in the registry, route to it
+        if (connections.size() == 1) {
+            return connections.values().iterator().next();
         }
+
+        return null;
     }
 
     private static void closeQuietly(AutoCloseable closeable) {
