@@ -139,8 +139,8 @@ public class PeerConnectionCoordinator implements TransportListener {
         PeerId peerId = connectionToPeer.remove(connectionId);
         if (peerId != null) {
             peerToConnection.remove(peerId, connectionId);
-            sessionManager.resetPeer(peerId.value());
             presenceBridge.handlePeerDisconnected(peerId);
+            sessionManager.resetPeer(peerId.value());
             LOGGER.info(() -> "Peer disconnected and unregistered: " + peerId.value());
         }
     }
@@ -153,22 +153,24 @@ public class PeerConnectionCoordinator implements TransportListener {
             connectionToPeer.put(connectionId, peerId);
             peerToConnection.put(peerId, connectionId);
 
-            // Process protocol state transition
+            // Notify Presence Bridge FIRST (promotes to CONNECTED & updates PeerRegistry)
+            presenceBridge.handlePeerConnected(peerId, connectionId);
+
+            // Then process protocol state transition (which notifies downstream listeners)
             sessionManager.processMessage(message);
 
-            // Notify Presence Bridge (promotes to CONNECTED & updates PeerRegistry)
-            presenceBridge.handlePeerConnected(peerId, connectionId);
             LOGGER.info(() -> "Peer successfully authenticated and connected: " + peerId.value());
         } else if (message.type() == MessageType.LEAVE) {
             PeerId peerId = PeerId.of(message.senderId());
 
-            // Process protocol state transition
-            sessionManager.processMessage(message);
-
-            // Unbind and notify presence bridge
+            // Unbind and notify presence bridge FIRST
             connectionToPeer.remove(connectionId);
             peerToConnection.remove(peerId, connectionId);
             presenceBridge.handlePeerDisconnected(peerId);
+
+            // Then process protocol state transition (which notifies downstream listeners)
+            sessionManager.processMessage(message);
+
             LOGGER.info(() -> "Peer successfully left session: " + peerId.value());
         } else {
             // Standard MESSAGE or other protocol messages
