@@ -1,9 +1,8 @@
 package com.aryntra.pravah;
 
-/**
- * Minimal executable entry point for Aryntra Pravah.
- * Bootstrapped in Sprint S0.1 to verify compilation, packaging, and execution.
- */
+import com.aryntra.pravah.core.PravahConfig;
+import com.aryntra.pravah.core.PravahRuntime;
+
 public final class Main {
 
     private Main() {
@@ -11,6 +10,15 @@ public final class Main {
     }
 
     public static void main(String[] args) {
-        System.out.println("Pravah foundation initialized.");
+        PravahConfig config = PravahConfig.defaultConfig();
+        PravahRuntime runtime = new PravahRuntime(config);
+
+        // Register JVM shutdown hook for graceful termination
+        Runtime.getRuntime().addShutdownHook(new Thread(runtime::stop));
+
+        runtime.start();
+        
+        // In S0 foundation mode, perform a clean immediate lifecycle verification run
+        runtime.stop();
     }
 }
