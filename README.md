@@ -8,7 +8,7 @@
 
 **Aryntra Pravah** is designed to evolve from a Java standard-library networking and concurrency system into a resilient peer-to-peer distributed communication platform.
 
-* **Current Phase:** Phase 0 - Foundation & Project Bootstrap (Completed)
+* **Current Phase:** Phase 4 - Application Messaging Layer (Completed)
 * **Initial Implementation:** Java CLI/TCP prototype (standard library)
 * **Long-term Model:** Peer <-> Peer (transport-agnostic across BLE, LAN, and Internet)
 
@@ -65,25 +65,33 @@ aryantra-pravah/
 |   |   |-- core/         # Lifecycle, configuration, and orchestration
 |   |   |-- protocol/     # Protocol framing, wire format, and serialization
 |   |   |-- transport/    # Transport contracts and implementations
-|   |   |-- peer/         # Peer identity and registry
+|   |   |-- peer/         # Peer identity, registry, presence, router (Phase 3)
+|   |   |-- messaging/    # Application messages, conversations, lifecycle (Phase 4)
 |   |   |-- server/       # TCP Server foundation (Phase 1)
 |   |   `-- client/       # CLI / Client runtime (Phase 1)
 |   `-- test/java/        # Unit, smoke, and contract verification tests
 |-- docs/
 |   |-- architecture/     # Architectural documentation & ADRs
 |   |-- protocol/         # Wire protocol specifications
+|   |-- sprints/          # Sprint plans and retrospectives (Phase 0-4)
 |   `-- experiments/      # Contract verification benchmarks
 |-- pom.xml               # Maven configuration (Java 21 target)
 `-- README.md
 ```
 
-## 6. Phase 0 Sprint Status
+## 6. Roadmap & Sprint Status
 
-| Sprint | Objective | Status |
-| --- | --- | --- |
-| **S0.1** | Project Bootstrap (Repository, Build, Test setup) | [x] Completed |
-| **S0.2** | Architecture Contracts (Boundaries, ADR-001) | [x] Completed |
-| **S0.3** | Core Runtime Foundation (Lifecycle, Config, Logging) | [x] Completed |
-| **S0.4** | Architecture Verification (Transport contract smoke test) | [x] Completed |
+| Phase | Description | Status | Tests |
+| --- | --- | --- | --- |
+| **Phase 0** | Foundation & Project Bootstrap (S0.1–S0.4) | ✅ Completed | 1/1 |
+| **Phase 1** | TCP Transport & Multi-Connection Registry (S1.1–S1.5) | ✅ Completed | 15/15 |
+| **Phase 2** | Wire Protocol & Length-Prefixed Framing (S2.1–S2.5) | ✅ Completed | 49/49 |
+| **Phase 3** | Peer Communication Substrate & Lifecycle (S3.1–S3.6) | ✅ Completed | 179/179 |
+| **Phase 4** | Application Messaging, Conversations & Lifecycle (S4.1–S4.3) | ✅ Completed | 197/197 |
 
-**Next Phase:** Phase 1 - TCP Foundation (S1.1 ServerSocket / Socket Client)
+### Phase 4 Breakdown
+* **S4.1** Application Messaging Boundary (`ApplicationMessage`, `ApplicationMessagingService`, `ApplicationMessageListener`)
+* **S4.2** Conversation Model (`ConversationId`, `Conversation`, `ConversationManager`)
+* **S4.3** Message Lifecycle & Delivery Receipts (`MessageState`: `CREATED` → `SENT` → `DELIVERED`, application ACK framing)
+
+**Next Phase:** Phase 5 — Persistence & Offline Messaging
