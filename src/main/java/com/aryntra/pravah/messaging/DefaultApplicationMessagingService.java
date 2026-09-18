@@ -1,5 +1,10 @@
 package com.aryntra.pravah.messaging;
 
+import com.aryntra.pravah.messaging.reliability.DeliveryOutbox;
+import com.aryntra.pravah.messaging.reliability.DeliveryRetryManager;
+import com.aryntra.pravah.messaging.reliability.InMemoryDeliveryOutbox;
+import com.aryntra.pravah.messaging.reliability.OutboxEntry;
+import com.aryntra.pravah.messaging.reliability.OutboxState;
 import com.aryntra.pravah.peer.PeerConnectionCoordinator;
 import com.aryntra.pravah.peer.PeerId;
 import com.aryntra.pravah.peer.PeerRouter;
@@ -19,7 +24,8 @@ import java.util.logging.Logger;
 /**
  * Default implementation of the ApplicationMessagingService.
  * Integrates message lifecycle state tracking, persistent history storage,
- * and group communication fan-out under a zero-dependency frame protocol.
+ * delivery intent tracking via DeliveryOutbox, group communication fan-out,
+ * and automated reconnect delivery retries via DeliveryRetryManager.
  */
 public class DefaultApplicationMessagingService implements ApplicationMessagingService {
 
@@ -32,6 +38,8 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
     private final PeerId localPeerId;
     private final PeerRouter peerRouter;
     private final MessageHistoryStore historyStore;
+    private final DeliveryOutbox outbox;
+    private final DeliveryRetryManager retryManager;
     private final ConversationManager conversationManager;
     private final List<ApplicationMessageListener> messageListeners = new CopyOnWriteArrayList<>();
     private final List<MessageLifecycleListener> lifecycleListeners = new CopyOnWriteArrayList<>();
@@ -42,23 +50,53 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
     public DefaultApplicationMessagingService(PeerId localPeerId,
                                               PeerRouter peerRouter,
                                               PeerConnectionCoordinator coordinator) {
-        this(localPeerId, peerRouter, coordinator, new InMemoryMessageHistoryStore());
+        this(localPeerId, peerRouter, coordinator, new InMemoryMessageHistoryStore(), new InMemoryDeliveryOutbox());
     }
 
     public DefaultApplicationMessagingService(PeerId localPeerId,
                                               PeerRouter peerRouter,
                                               PeerConnectionCoordinator coordinator,
                                               MessageHistoryStore historyStore) {
+        this(localPeerId, peerRouter, coordinator, historyStore, new InMemoryDeliveryOutbox());
+    }
+
+    public DefaultApplicationMessagingService(PeerId localPeerId,
+                                              PeerRouter peerRouter,
+                                              PeerConnectionCoordinator coordinator,
+                                              MessageHistoryStore historyStore,
+                                              DeliveryOutbox outbox) {
         this.localPeerId = Objects.requireNonNull(localPeerId, "localPeerId must not be null");
         this.peerRouter = Objects.requireNonNull(peerRouter, "peerRouter must not be null");
         this.historyStore = Objects.requireNonNull(historyStore, "historyStore must not be null");
+        this.outbox = Objects.requireNonNull(outbox, "outbox must not be null");
         this.conversationManager = new ConversationManager(localPeerId);
         Objects.requireNonNull(coordinator, "coordinator must not be null");
+
+        this.retryManager = new DeliveryRetryManager(
+                localPeerId,
+                outbox,
+                historyStore,
+                peerRouter,
+                (messageId, success) -> {
+                    if (success) {
+                        updateState(messageId, MessageState.SENT);
+                    } else {
+                        updateState(messageId, MessageState.FAILED);
+                    }
+                }
+        );
 
         // Bind incoming logical session events
         coordinator.setProtocolListener(new ProtocolListener() {
             @Override
-            public void onPeerJoined(String peerIdStr, Message message) {}
+            public void onPeerJoined(String peerIdStr, Message message) {
+                try {
+                    PeerId joinedPeer = PeerId.of(peerIdStr);
+                    retryManager.retryPendingForPeer(joinedPeer);
+                } catch (Exception e) {
+                    LOGGER.warning("Error triggering retry upon peer join: " + e.getMessage());
+                }
+            }
 
             @Override
             public void onMessageReceived(String peerIdStr, Message message) {
@@ -74,6 +112,14 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
 
     public MessageHistoryStore getHistoryStore() {
         return historyStore;
+    }
+
+    public DeliveryOutbox getOutbox() {
+        return outbox;
+    }
+
+    public DeliveryRetryManager getRetryManager() {
+        return retryManager;
     }
 
     public ConversationManager getConversationManager() {
@@ -93,11 +139,18 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
             return;
         }
 
-        // Direct message path
+        // 1. Direct message path - persist history
         try {
             historyStore.save(message, MessageState.CREATED);
         } catch (IllegalArgumentException e) {
             LOGGER.fine("Message already in history store: " + message.messageId());
+        }
+
+        // 2. Register delivery intent in outbox
+        try {
+            outbox.enqueue(OutboxEntry.pending(message.messageId(), destination, conversationId));
+        } catch (IllegalArgumentException e) {
+            LOGGER.fine("Delivery intent already in outbox: " + message.messageId());
         }
 
         updateState(message.messageId(), MessageState.CREATED);
@@ -114,6 +167,7 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                 framedPayload
         );
 
+        // 3. Attempt immediate delivery
         try {
             LOGGER.fine(() -> "Dispatching application message " + message.messageId() + " to " + destination.value());
             peerRouter.send(destination, protocolMessage);
@@ -121,6 +175,7 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         } catch (Exception e) {
             LOGGER.warning(() -> "Failed to route application message " + message.messageId() + ": " + e.getMessage());
             updateState(message.messageId(), MessageState.FAILED);
+            // Notice: OutboxEntry remains PENDING in outbox, preserving delivery intent
         }
     }
 
@@ -301,10 +356,6 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         }
     }
 
-    /**
-     * Reconstructs and processes inbound group messages.
-     * Automatically registers group and resolves ConversationId payload boundaries.
-     */
     private void handleInboundGroupChat(String senderPeerIdStr, Message protocolMessage) {
         try {
             PeerId sender = PeerId.of(senderPeerIdStr);
@@ -368,6 +419,7 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
 
         LOGGER.fine(() -> "Received remote delivery receipt for message " + ackedMessageId);
         updateState(ackedMessageId, MessageState.DELIVERED);
+        outbox.markCompleted(ackedMessageId);
     }
 
     private void sendApplicationAck(PeerId recipient, String messageIdToAck) {
