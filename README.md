@@ -1,4 +1,4 @@
-﻿# Aryntra Pravah
+# Aryntra Pravah
 
 > A mobile-first, transport-agnostic distributed communication system foundation.
 
