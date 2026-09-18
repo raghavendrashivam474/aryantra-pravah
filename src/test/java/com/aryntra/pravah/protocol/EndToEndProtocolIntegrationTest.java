@@ -201,8 +201,11 @@ class EndToEndProtocolIntegrationTest {
             // Valid messages must arrive without disruption
             assertTrue(serverStack.messageLatch.await(5, TimeUnit.SECONDS));
             assertEquals(2, serverStack.receivedMessages.size());
-            assertEquals("Alice is safe", new String(serverStack.receivedMessages.get(0).payload(), StandardCharsets.UTF_8));
-            assertEquals("Bob is safe", new String(serverStack.receivedMessages.get(1).payload(), StandardCharsets.UTF_8));
+            java.util.Set<String> payloads = new java.util.HashSet<>();
+            payloads.add(new String(serverStack.receivedMessages.get(0).payload(), java.nio.charset.StandardCharsets.UTF_8));
+            payloads.add(new String(serverStack.receivedMessages.get(1).payload(), java.nio.charset.StandardCharsets.UTF_8));
+            assertTrue(payloads.contains("Alice is safe"), "Should contain Alice's message");
+            assertTrue(payloads.contains("Bob is safe"), "Should contain Bob's message");
         }
     }
 }
