@@ -6,13 +6,14 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Manages active conversations and guarantees logical direct conversation uniqueness
- * regardless of which peer initiated the conversation.
+ * Manages active conversations. Maintains unique direct conversations
+ * and handles group conversation lifecycles.
  */
 public class ConversationManager {
 
     private final PeerId localPeerId;
     private final Map<ConversationId, Conversation> conversations = new ConcurrentHashMap<>();
+    private final Map<ConversationId, GroupConversation> groupConversations = new ConcurrentHashMap<>();
 
     public ConversationManager(PeerId localPeerId) {
         this.localPeerId = Objects.requireNonNull(localPeerId, "localPeerId must not be null");
@@ -35,18 +36,52 @@ public class ConversationManager {
         });
     }
 
+    /**
+     * Registers a pre-existing or reconstructed group conversation.
+     */
+    public void registerGroupConversation(GroupConversation group) {
+        Objects.requireNonNull(group, "group must not be null");
+        groupConversations.put(group.conversationId(), group);
+    }
+
+    /**
+     * Creates a new Group Conversation with a name and initial participants.
+     * Automatically adds the local peer as a participant.
+     */
+    public GroupConversation createGroup(String name, Set<PeerId> initialParticipants) {
+        Objects.requireNonNull(name, "name must not be null");
+        Objects.requireNonNull(initialParticipants, "initialParticipants must not be null");
+
+        Set<PeerId> participants = new HashSet<>(initialParticipants);
+        participants.add(localPeerId);
+
+        GroupConversation group = GroupConversation.create(name, participants);
+        groupConversations.put(group.conversationId(), group);
+        return group;
+    }
+
     public Optional<Conversation> getConversation(ConversationId conversationId) {
         Objects.requireNonNull(conversationId, "conversationId must not be null");
         return Optional.ofNullable(conversations.get(conversationId));
+    }
+
+    public Optional<GroupConversation> getGroupConversation(ConversationId conversationId) {
+        Objects.requireNonNull(conversationId, "conversationId must not be null");
+        return Optional.ofNullable(groupConversations.get(conversationId));
     }
 
     public List<Conversation> listConversations() {
         return new ArrayList<>(conversations.values());
     }
 
+    public List<GroupConversation> listGroupConversations() {
+        return new ArrayList<>(groupConversations.values());
+    }
+
     public void removeConversation(ConversationId conversationId) {
         Objects.requireNonNull(conversationId, "conversationId must not be null");
         conversations.remove(conversationId);
+        groupConversations.remove(conversationId);
     }
 
     /**
@@ -55,14 +90,14 @@ public class ConversationManager {
     public static ConversationId deriveDirectConversationId(PeerId p1, PeerId p2) {
         Objects.requireNonNull(p1, "p1 must not be null");
         Objects.requireNonNull(p2, "p2 must not be null");
-        
+
         String val1 = p1.value();
         String val2 = p2.value();
-        
-        String combined = val1.compareTo(val2) < 0 
-                ? "direct:" + val1 + ":" + val2 
+
+        String combined = val1.compareTo(val2) < 0
+                ? "direct:" + val1 + ":" + val2
                 : "direct:" + val2 + ":" + val1;
-                
+
         return new ConversationId(combined);
     }
 }

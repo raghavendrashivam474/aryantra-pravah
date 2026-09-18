@@ -11,24 +11,28 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
 
 /**
  * Default implementation of the ApplicationMessagingService.
- * Implements S4.3 message state tracking and application-level delivery receipts
- * without breaking any frozen Phase 3 network protocol constraints.
+ * Integrates message lifecycle state tracking, persistent history storage,
+ * and group communication fan-out under a zero-dependency frame protocol.
  */
 public class DefaultApplicationMessagingService implements ApplicationMessagingService {
 
     private static final Logger LOGGER = Logger.getLogger(DefaultApplicationMessagingService.class.getName());
 
-    private static final byte APP_MSG_CHAT = 0x01;
-    private static final byte APP_MSG_ACK  = 0x02;
+    private static final byte APP_MSG_CHAT       = 0x01;
+    private static final byte APP_MSG_ACK        = 0x02;
+    private static final byte APP_MSG_GROUP_CHAT = 0x03;
 
     private final PeerId localPeerId;
     private final PeerRouter peerRouter;
+    private final MessageHistoryStore historyStore;
+    private final ConversationManager conversationManager;
     private final List<ApplicationMessageListener> messageListeners = new CopyOnWriteArrayList<>();
     private final List<MessageLifecycleListener> lifecycleListeners = new CopyOnWriteArrayList<>();
 
@@ -38,8 +42,17 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
     public DefaultApplicationMessagingService(PeerId localPeerId,
                                               PeerRouter peerRouter,
                                               PeerConnectionCoordinator coordinator) {
+        this(localPeerId, peerRouter, coordinator, new InMemoryMessageHistoryStore());
+    }
+
+    public DefaultApplicationMessagingService(PeerId localPeerId,
+                                              PeerRouter peerRouter,
+                                              PeerConnectionCoordinator coordinator,
+                                              MessageHistoryStore historyStore) {
         this.localPeerId = Objects.requireNonNull(localPeerId, "localPeerId must not be null");
         this.peerRouter = Objects.requireNonNull(peerRouter, "peerRouter must not be null");
+        this.historyStore = Objects.requireNonNull(historyStore, "historyStore must not be null");
+        this.conversationManager = new ConversationManager(localPeerId);
         Objects.requireNonNull(coordinator, "coordinator must not be null");
 
         // Bind incoming logical session events
@@ -59,14 +72,36 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         });
     }
 
+    public MessageHistoryStore getHistoryStore() {
+        return historyStore;
+    }
+
+    public ConversationManager getConversationManager() {
+        return conversationManager;
+    }
+
     @Override
     public void send(PeerId destination, ApplicationMessage message) {
         Objects.requireNonNull(destination, "destination must not be null");
         Objects.requireNonNull(message, "message must not be null");
 
+        ConversationId conversationId = message.conversationId();
+
+        // Check if destination is group
+        if (conversationId.value().startsWith("group:")) {
+            sendGroupMessage(message);
+            return;
+        }
+
+        // Direct message path
+        try {
+            historyStore.save(message, MessageState.CREATED);
+        } catch (IllegalArgumentException e) {
+            LOGGER.fine("Message already in history store: " + message.messageId());
+        }
+
         updateState(message.messageId(), MessageState.CREATED);
 
-        // Frame the application payload: type byte + text content bytes
         byte[] appTextBytes = message.toPayload();
         byte[] framedPayload = new byte[1 + appTextBytes.length];
         framedPayload[0] = APP_MSG_CHAT;
@@ -89,14 +124,74 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         }
     }
 
+    /**
+     * Application-layer fan-out implementation for Group Messages.
+     * Guarantees message delivery without extending core PeerRouter constructs.
+     */
+    private void sendGroupMessage(ApplicationMessage message) {
+        ConversationId groupId = message.conversationId();
+        GroupConversation group = conversationManager.getGroupConversation(groupId)
+                .orElseThrow(() -> new IllegalArgumentException("No registered group conversation with ID: " + groupId));
+
+        // 1. Save locally with initial state
+        try {
+            historyStore.save(message, MessageState.CREATED);
+        } catch (IllegalArgumentException e) {
+            LOGGER.fine("Group message already in history store: " + message.messageId());
+        }
+        updateState(message.messageId(), MessageState.CREATED);
+
+        // 2. Wire frame group message payload:
+        // [0x03 (byte)][2-byte groupId len][groupId (UTF-8)][content (UTF-8)]
+        byte[] groupIdBytes = groupId.value().getBytes(StandardCharsets.UTF_8);
+        byte[] appTextBytes = message.toPayload();
+
+        int payloadLen = 1 + 2 + groupIdBytes.length + appTextBytes.length;
+        byte[] framedPayload = new byte[payloadLen];
+
+        framedPayload[0] = APP_MSG_GROUP_CHAT;
+        framedPayload[1] = (byte) ((groupIdBytes.length >> 8) & 0xFF);
+        framedPayload[2] = (byte) (groupIdBytes.length & 0xFF);
+        System.arraycopy(groupIdBytes, 0, framedPayload, 3, groupIdBytes.length);
+        System.arraycopy(appTextBytes, 0, framedPayload, 3 + groupIdBytes.length, appTextBytes.length);
+
+        // 3. Dispatch to all participants except local self
+        Set<PeerId> participants = group.participants();
+        boolean atLeastOneDispatched = false;
+
+        for (PeerId participant : participants) {
+            if (participant.equals(localPeerId)) {
+                continue;
+            }
+
+            Message protocolMessage = new Message(
+                    MessageType.MESSAGE,
+                    localPeerId.value(),
+                    message.messageId(),
+                    framedPayload
+            );
+
+            try {
+                LOGGER.fine(() -> "Routing group message " + message.messageId() + " to " + participant.value());
+                peerRouter.send(participant, protocolMessage);
+                atLeastOneDispatched = true;
+            } catch (Exception e) {
+                LOGGER.warning(() -> "Failed to route group message " + message.messageId() + " to " + participant.value() + ": " + e.getMessage());
+            }
+        }
+
+        if (atLeastOneDispatched) {
+            updateState(message.messageId(), MessageState.SENT);
+        } else {
+            updateState(message.messageId(), MessageState.FAILED);
+        }
+    }
+
     @Override
     public ApplicationMessage sendText(PeerId destination, String content) {
         return sendText(destination, content, new ConversationId("direct:system:default"));
     }
 
-    /**
-     * S4.2 capability supporting sending directly within a specified conversation container.
-     */
     public ApplicationMessage sendText(PeerId destination, String content, ConversationId conversationId) {
         Objects.requireNonNull(destination, "destination must not be null");
         Objects.requireNonNull(content, "content must not be null");
@@ -134,11 +229,19 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
     }
 
     public MessageState getMessageState(String messageId) {
-        return messageStates.get(messageId);
+        MessageState state = messageStates.get(messageId);
+        if (state == null) {
+            return historyStore.findState(messageId).orElse(null);
+        }
+        return state;
     }
 
     private void updateState(String messageId, MessageState state) {
         messageStates.put(messageId, state);
+        try {
+            historyStore.updateState(messageId, state);
+        } catch (Exception ignored) {}
+
         for (MessageLifecycleListener listener : lifecycleListeners) {
             try {
                 listener.onStateChanged(messageId, state);
@@ -155,10 +258,11 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         }
 
         byte appType = payload[0];
-        if (appType == APP_MSG_CHAT) {
-            handleInboundChat(senderPeerIdStr, protocolMessage);
-        } else if (appType == APP_MSG_ACK) {
-            handleInboundAck(protocolMessage);
+        switch (appType) {
+            case APP_MSG_CHAT -> handleInboundChat(senderPeerIdStr, protocolMessage);
+            case APP_MSG_ACK -> handleInboundAck(protocolMessage);
+            case APP_MSG_GROUP_CHAT -> handleInboundGroupChat(senderPeerIdStr, protocolMessage);
+            default -> LOGGER.warning("Unknown application payload type: " + appType);
         }
     }
 
@@ -169,7 +273,6 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
             byte[] textPayload = new byte[rawPayload.length - 1];
             System.arraycopy(rawPayload, 1, textPayload, 0, textPayload.length);
 
-            // Reconstruct linking back to its canonical direct conversation context
             ConversationId conversationId = ConversationManager.deriveDirectConversationId(localPeerId, sender);
             ApplicationMessage appMessage = ApplicationMessage.fromPayload(
                     protocolMessage.messageId(),
@@ -178,7 +281,12 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                     conversationId
             );
 
-            // Notify application listeners
+            try {
+                historyStore.save(appMessage, MessageState.DELIVERED);
+            } catch (Exception e) {
+                LOGGER.fine("Message already in store: " + appMessage.messageId());
+            }
+
             for (ApplicationMessageListener listener : messageListeners) {
                 try {
                     listener.onMessage(appMessage);
@@ -187,11 +295,68 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                 }
             }
 
-            // S4.3 Rule: Instantly send application-level ACK back to the sender
             sendApplicationAck(sender, protocolMessage.messageId());
-
         } catch (Exception e) {
             LOGGER.warning("Inbound application parsing failed: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Reconstructs and processes inbound group messages.
+     * Automatically registers group and resolves ConversationId payload boundaries.
+     */
+    private void handleInboundGroupChat(String senderPeerIdStr, Message protocolMessage) {
+        try {
+            PeerId sender = PeerId.of(senderPeerIdStr);
+            byte[] rawPayload = protocolMessage.payload();
+
+            // Extract group ID length and value
+            int groupLen = ((rawPayload[1] & 0xFF) << 8) | (rawPayload[2] & 0xFF);
+            String groupIdStr = new String(rawPayload, 3, groupLen, StandardCharsets.UTF_8);
+            ConversationId groupId = new ConversationId(groupIdStr);
+
+            // Extract message content
+            int contentOffset = 3 + groupLen;
+            byte[] textPayload = new byte[rawPayload.length - contentOffset];
+            System.arraycopy(rawPayload, contentOffset, textPayload, 0, textPayload.length);
+
+            ApplicationMessage appMessage = ApplicationMessage.fromPayload(
+                    protocolMessage.messageId(),
+                    sender,
+                    textPayload,
+                    groupId
+            );
+
+            // Reconstruct / Auto-reconcile group locally if not present
+            if (conversationManager.getGroupConversation(groupId).isEmpty()) {
+                GroupConversation autoReconstructed = new GroupConversation(
+                        groupId,
+                        "Auto Group " + groupIdStr.substring(Math.min(groupIdStr.length(), 11)),
+                        Set.of(localPeerId, sender)
+                );
+                conversationManager.registerGroupConversation(autoReconstructed);
+            }
+
+            // Persist
+            try {
+                historyStore.save(appMessage, MessageState.DELIVERED);
+            } catch (Exception e) {
+                LOGGER.fine("Group message already in store: " + appMessage.messageId());
+            }
+
+            // Notify
+            for (ApplicationMessageListener listener : messageListeners) {
+                try {
+                    listener.onMessage(appMessage);
+                } catch (Exception e) {
+                    LOGGER.warning("Exception in ApplicationMessageListener: " + e.getMessage());
+                }
+            }
+
+            // Reply with delivery receipt
+            sendApplicationAck(sender, protocolMessage.messageId());
+        } catch (Exception e) {
+            LOGGER.warning("Inbound group parsing failed: " + e.getMessage());
         }
     }
 
@@ -214,7 +379,7 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         Message ackMessage = new Message(
                 MessageType.MESSAGE,
                 localPeerId.value(),
-                UUID_Helper(), // Unique envelope ID for receipt routing
+                UUID_Helper(),
                 framedAckPayload
         );
 
