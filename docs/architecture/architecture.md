@@ -13,6 +13,7 @@ Aryntra Pravah is a mobile-first, transport-agnostic distributed communication p
 * **Message Boundary:** Separation between raw bytes, structured frames, and rich application message entities.
 * **Peer Boundary:** Separation between logical peer identities (`PeerId`) and transient transport socket descriptors (`connectionId`).
 * **Application Boundary:** Separation between network protocol envelopes (`Message`) and rich domain models (`ApplicationMessage`, `Conversation`).
+* **Reliability Boundary:** Orthogonal separation between logical message lifecycle (`MessageState`) and delivery work queues (`OutboxState`).
 
 ## 4. Phase 1 — TCP Transport Architecture
 * **Implementation:** `TcpTransport` implements `Transport` using standard Java networking (`ServerSocket`, `Socket`).
@@ -44,7 +45,27 @@ Aryntra Pravah is a mobile-first, transport-agnostic distributed communication p
   - Application ACK Framing: Inbound chat payloads (`0x01` CHAT) automatically trigger application-level delivery receipts (`0x02` ACK) back to the sender within the existing protocol envelope.
   - Delivery Correlation: Received ACKs correlate with outgoing `messageId`s and trigger `MessageLifecycleListener` callbacks to update UI/application state to `DELIVERED`.
 
-## 8. Complete System Layer Stack
+## 8. Phase 5 — Reliability & Persistent Outbox Layer Architecture
+* **Delivery Intent & State Separation (ADR-008):**
+  - Delivery work tracking is decoupled from logical message lifecycle (`OutboxState`: `PENDING` → `COMPLETED` | `ABANDONED`).
+  - `DeliveryOutbox` tracks single-peer delivery work items; `MessageHistoryStore` preserves complete domain message history.
+* **Durable Offline Queues:**
+  - `SqliteDeliveryOutbox` guarantees delivery intent survival across process restarts and node reboots.
+  - Enqueue order is preserved deterministically via autoincrement sequence primary keys.
+* **Event-Driven Retry & Identity Invariance:**
+  - `DeliveryRetryManager` retries pending items upon peer `JOIN` events. No polling loops.
+  - Retries preserve original `messageId` without generating synthetic retry message IDs.
+* **Bounded Retry & Dead-Letter (S5.4 / ADR-009):**
+  - Configurable `maxAttempts` per delivery work item.
+  - Outbox entries exceeding retry limits transition to `ABANDONED` and are excluded from future automatic retry sweeps.
+* **Delivery Attempt Observability (S5.5):**
+  - `RetryAttemptListener` and `RetryAttemptEvent` expose delivery milestones (`DISPATCHED`, `FAILED`, `ABANDONED`) passively.
+  - Listener exceptions are isolated and never disrupt core delivery processing.
+* **Per-Recipient Reliable Group Delivery (S5.6 / ADR-010):**
+  - `GroupDeliveryOutbox` and `SqliteGroupDeliveryOutbox` model group messages as independent per-recipient delivery intents keyed by `(messageId, PeerId)`.
+  - Reconnection sweeps retry only pending participants; completed recipients are never resent.
+
+## 9. Complete System Layer Stack
 
 ```text
 ┌─────────────────────────────────────────────────────────┐
@@ -59,6 +80,12 @@ Aryntra Pravah is a mobile-first, transport-agnostic distributed communication p
 │                                                         │
 │  ApplicationMessage · Conversation · ConversationManager│
 │  MessageState · ApplicationMessagingService             │
+├─────────────────────────────────────────────────────────┤
+│                   RELIABILITY LAYER                     │
+│                                                         │
+│  DeliveryOutbox · GroupDeliveryOutbox                   │
+│  DeliveryRetryManager · Observability Listeners         │
+│  SqliteDeliveryOutbox · SqliteGroupDeliveryOutbox       │
 └────────────────────────────┬────────────────────────────┘
                              │
                              ▼

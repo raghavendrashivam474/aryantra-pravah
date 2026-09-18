@@ -8,7 +8,7 @@
 
 **Aryntra Pravah** is designed to evolve from a Java standard-library networking and concurrency system into a resilient peer-to-peer distributed communication platform.
 
-* **Current Phase:** Phase 4 - Application Messaging Layer (Completed)
+* **Current Phase:** Phase 5 - Reliable Delivery Layer (Completed)
 * **Initial Implementation:** Java CLI/TCP prototype (standard library)
 * **Long-term Model:** Peer <-> Peer (transport-agnostic across BLE, LAN, and Internet)
 
@@ -67,13 +67,14 @@ aryantra-pravah/
 |   |   |-- transport/    # Transport contracts and implementations
 |   |   |-- peer/         # Peer identity, registry, presence, router (Phase 3)
 |   |   |-- messaging/    # Application messages, conversations, lifecycle (Phase 4)
+|   |   |   |-- reliability/ # Delivery outbox, retry, group reliability (Phase 5)
 |   |   |-- server/       # TCP Server foundation (Phase 1)
 |   |   `-- client/       # CLI / Client runtime (Phase 1)
 |   `-- test/java/        # Unit, smoke, and contract verification tests
 |-- docs/
 |   |-- architecture/     # Architectural documentation & ADRs
 |   |-- protocol/         # Wire protocol specifications
-|   |-- sprints/          # Sprint plans and retrospectives (Phase 0-4)
+|   |-- sprints/          # Sprint plans and retrospectives (Phase 0-5)
 |   `-- experiments/      # Contract verification benchmarks
 |-- pom.xml               # Maven configuration (Java 21 target)
 `-- README.md
@@ -87,11 +88,19 @@ aryantra-pravah/
 | **Phase 1** | TCP Transport & Multi-Connection Registry (S1.1–S1.5) | ✅ Completed | 15/15 |
 | **Phase 2** | Wire Protocol & Length-Prefixed Framing (S2.1–S2.5) | ✅ Completed | 49/49 |
 | **Phase 3** | Peer Communication Substrate & Lifecycle (S3.1–S3.6) | ✅ Completed | 179/179 |
-| **Phase 4** | Application Messaging, Conversations & Lifecycle (S4.1–S4.3) | ✅ Completed | 197/197 |
+| **Phase 4** | Application Messaging, Conversations & Lifecycle (S4.1–S4.6) | ✅ Completed | 230/230 |
+| **Phase 5** | Reliable Delivery, Bounded Retry & Group Reliability (S5.1–S5.6) | ✅ Completed | 271/271 |
 
 ### Phase 4 Breakdown
 * **S4.1** Application Messaging Boundary (`ApplicationMessage`, `ApplicationMessagingService`, `ApplicationMessageListener`)
 * **S4.2** Conversation Model (`ConversationId`, `Conversation`, `ConversationManager`)
 * **S4.3** Message Lifecycle & Delivery Receipts (`MessageState`: `CREATED` → `SENT` → `DELIVERED`, application ACK framing)
 
-**Next Phase:** Phase 5 — Persistence & Offline Messaging
+
+### Phase 5 Breakdown
+* **S5.1–S5.3** Delivery Intent, Offline Queue, Retry & Reconnection (OutboxState, DeliveryOutbox, DeliveryRetryManager)
+* **S5.4** Bounded Retry & Dead-Letter (ABANDONED state, attempt counting, configurable maxAttempts)
+* **S5.5** Delivery Attempt Observability (RetryAttemptListener, passive event-driven observation)
+* **S5.6** Reliable Group Delivery (per-recipient GroupDeliveryOutbox, independent retry per participant)
+
+**Next Phase:** Phase 6 — TBD
