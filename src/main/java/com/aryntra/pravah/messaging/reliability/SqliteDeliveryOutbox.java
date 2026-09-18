@@ -11,18 +11,6 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 
-/**
- * Durable SQLite-backed implementation of DeliveryOutbox.
- *
- * Guarantees:
- * <ul>
- *   <li>Delivery intents survive application process restarts</li>
- *   <li>Deterministic ordering using SQLite autoincrement primary key `seq`</li>
- *   <li>Strict uniqueness on `message_id`</li>
- *   <li>Destination identity persisted as logical PeerId (no socket or connection metadata)</li>
- *   <li>Thread-safe access through synchronized database operations</li>
- * </ul>
- */
 public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
 
     private final Connection connection;
@@ -54,7 +42,8 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
                     destination_peer_id TEXT NOT NULL,
                     conversation_id TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    created_at_epoch_ms INTEGER NOT NULL
+                    created_at_epoch_ms INTEGER NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0
                 );
                 """;
 
@@ -72,6 +61,13 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
             stmt.execute(createTableSql);
             stmt.execute(createStatusSeqIndex);
             stmt.execute(createPeerIndex);
+
+            // Migrates old schema if column does not exist
+            try {
+                stmt.execute("ALTER TABLE outbox ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0;");
+            } catch (SQLException ignored) {
+                // Column already exists or table was just created with the column
+            }
         } catch (SQLException e) {
             throw new RuntimeException("Failed to initialize outbox schema: " + e.getMessage(), e);
         }
@@ -82,8 +78,8 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
         Objects.requireNonNull(entry, "entry must not be null");
 
         String sql = """
-                INSERT INTO outbox (message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms)
-                VALUES (?, ?, ?, ?, ?);
+                INSERT INTO outbox (message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms, attempt_count)
+                VALUES (?, ?, ?, ?, ?, ?);
                 """;
 
         try (PreparedStatement ps = connection.prepareStatement(sql)) {
@@ -92,6 +88,7 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
             ps.setString(3, entry.conversationId().value());
             ps.setString(4, entry.state().name());
             ps.setLong(5, entry.createdAt().toEpochMilli());
+            ps.setInt(6, entry.attemptCount());
             ps.executeUpdate();
         } catch (SQLException e) {
             if (e.getMessage() != null && (e.getMessage().contains("UNIQUE") || e.getMessage().contains("constraint"))) {
@@ -104,7 +101,7 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
     @Override
     public synchronized List<OutboxEntry> findPending() {
         String sql = """
-                SELECT message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms
+                SELECT message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms, attempt_count
                 FROM outbox
                 WHERE status = 'PENDING'
                 ORDER BY seq ASC;
@@ -127,7 +124,7 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
         Objects.requireNonNull(destination, "destination must not be null");
 
         String sql = """
-                SELECT message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms
+                SELECT message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms, attempt_count
                 FROM outbox
                 WHERE status = 'PENDING' AND destination_peer_id = ?
                 ORDER BY seq ASC;
@@ -152,7 +149,7 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
         Objects.requireNonNull(messageId, "messageId must not be null");
 
         String sql = """
-                SELECT message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms
+                SELECT message_id, destination_peer_id, conversation_id, status, created_at_epoch_ms, attempt_count
                 FROM outbox
                 WHERE message_id = ?;
                 """;
@@ -204,6 +201,45 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
     }
 
     @Override
+    public synchronized void updateAttemptCount(String messageId, int attemptCount) {
+        Objects.requireNonNull(messageId, "messageId must not be null");
+
+        String sql = """
+                UPDATE outbox
+                SET attempt_count = ?
+                WHERE message_id = ?;
+                """;
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setInt(1, attemptCount);
+            ps.setString(2, messageId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to update attempt count: " + messageId, e);
+        }
+    }
+
+    @Override
+    public synchronized void updateState(String messageId, OutboxState state) {
+        Objects.requireNonNull(messageId, "messageId must not be null");
+        Objects.requireNonNull(state, "state must not be null");
+
+        String sql = """
+                UPDATE outbox
+                SET status = ?
+                WHERE message_id = ?;
+                """;
+
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.setString(1, state.name());
+            ps.setString(2, messageId);
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to update status: " + messageId, e);
+        }
+    }
+
+    @Override
     public synchronized void close() throws Exception {
         if (ownsConnection && connection != null && !connection.isClosed()) {
             connection.close();
@@ -216,6 +252,7 @@ public class SqliteDeliveryOutbox implements DeliveryOutbox, AutoCloseable {
         ConversationId convId = new ConversationId(rs.getString("conversation_id"));
         OutboxState state = OutboxState.valueOf(rs.getString("status"));
         Instant createdAt = Instant.ofEpochMilli(rs.getLong("created_at_epoch_ms"));
-        return new OutboxEntry(msgId, dest, convId, state, createdAt);
+        int attempts = rs.getInt("attempt_count");
+        return new OutboxEntry(msgId, dest, convId, state, createdAt, attempts);
     }
 }

@@ -10,26 +10,11 @@ import java.util.Optional;
  *
  * The DeliveryOutbox represents the set of messages that the application
  * intends to deliver but have not yet been successfully routed.
- *
- * Conceptual separation from MessageHistoryStore:
- *   MessageHistoryStore = "What messages do I know about?"
- *   DeliveryOutbox      = "Which messages still need delivery work?"
- *
- * A message may exist in history while simultaneously being PENDING
- * in the outbox. Once delivery succeeds, the outbox entry is completed
- * and removed, while the history record persists.
- *
- * Implementations must use PeerId for destination identity,
- * never connectionId or transport metadata.
  */
 public interface DeliveryOutbox {
 
     /**
      * Registers a new delivery intent.
-     *
-     * @param entry the outbox entry to enqueue
-     * @throws IllegalArgumentException if an entry with the same messageId already exists
-     * @throws NullPointerException if entry is null
      */
     void enqueue(OutboxEntry entry);
 
@@ -52,17 +37,22 @@ public interface DeliveryOutbox {
 
     /**
      * Marks a delivery as successfully completed and removes it
-     * from the pending set.
-     *
-     * @param messageId the message whose delivery completed
+     * from the pending set (state becomes COMPLETED).
      */
     void markCompleted(String messageId);
 
     /**
      * Removes an outbox entry entirely.
-     * No-op if the messageId does not exist.
-     *
-     * @param messageId the message to remove
      */
     void remove(String messageId);
+
+    /**
+     * Updates the attempt count for an existing entry.
+     */
+    void updateAttemptCount(String messageId, int attemptCount);
+
+    /**
+     * Updates the state for an existing entry (e.g. to ABANDONED).
+     */
+    void updateState(String messageId, OutboxState state);
 }

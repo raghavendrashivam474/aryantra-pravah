@@ -7,15 +7,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
-/**
- * In-memory implementation of DeliveryOutbox.
- *
- * Guarantees deterministic ordering:
- * 1. By createdAt timestamp
- * 2. By insertion sequence to break ties when timestamps collide
- *
- * Thread-safe via ConcurrentHashMap and AtomicLong.
- */
 public class InMemoryDeliveryOutbox implements DeliveryOutbox {
 
     private record SequencedEntry(long seq, OutboxEntry entry) {}
@@ -77,5 +68,20 @@ public class InMemoryDeliveryOutbox implements DeliveryOutbox {
         if (messageId != null) {
             entries.remove(messageId);
         }
+    }
+
+    @Override
+    public void updateAttemptCount(String messageId, int attemptCount) {
+        Objects.requireNonNull(messageId, "messageId must not be null");
+        entries.computeIfPresent(messageId, (id, se) ->
+                new SequencedEntry(se.seq(), se.entry().withAttemptCount(attemptCount)));
+    }
+
+    @Override
+    public void updateState(String messageId, OutboxState state) {
+        Objects.requireNonNull(messageId, "messageId must not be null");
+        Objects.requireNonNull(state, "state must not be null");
+        entries.computeIfPresent(messageId, (id, se) ->
+                new SequencedEntry(se.seq(), se.entry().withState(state)));
     }
 }

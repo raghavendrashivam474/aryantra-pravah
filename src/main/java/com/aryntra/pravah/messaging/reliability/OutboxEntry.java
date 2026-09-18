@@ -16,6 +16,9 @@ import java.util.Objects;
  *
  * The entry is immutable. State transitions are handled by the
  * DeliveryOutbox implementation, which replaces entries as needed.
+ *
+ * The attemptCount tracks how many delivery dispatch attempts have
+ * been made. This supports bounded retry policies (S5.4).
  */
 public final class OutboxEntry {
 
@@ -24,12 +27,17 @@ public final class OutboxEntry {
     private final ConversationId conversationId;
     private final OutboxState state;
     private final Instant createdAt;
+    private final int attemptCount;
 
+    /**
+     * Full constructor including attempt count for bounded retry tracking.
+     */
     public OutboxEntry(String messageId,
                        PeerId destination,
                        ConversationId conversationId,
                        OutboxState state,
-                       Instant createdAt) {
+                       Instant createdAt,
+                       int attemptCount) {
         this.messageId = Objects.requireNonNull(messageId, "messageId must not be null");
         if (messageId.isBlank()) {
             throw new IllegalArgumentException("messageId must not be blank");
@@ -38,15 +46,31 @@ public final class OutboxEntry {
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId must not be null");
         this.state = Objects.requireNonNull(state, "state must not be null");
         this.createdAt = Objects.requireNonNull(createdAt, "createdAt must not be null");
+        if (attemptCount < 0) {
+            throw new IllegalArgumentException("attemptCount must not be negative");
+        }
+        this.attemptCount = attemptCount;
     }
 
     /**
-     * Convenience constructor for creating a new PENDING entry.
+     * Backward-compatible constructor defaulting attemptCount to 0.
+     */
+    public OutboxEntry(String messageId,
+                       PeerId destination,
+                       ConversationId conversationId,
+                       OutboxState state,
+                       Instant createdAt) {
+        this(messageId, destination, conversationId, state, createdAt, 0);
+    }
+
+    /**
+     * Convenience constructor for creating a new PENDING entry with zero attempts.
      */
     public static OutboxEntry pending(String messageId,
                                       PeerId destination,
                                       ConversationId conversationId) {
-        return new OutboxEntry(messageId, destination, conversationId, OutboxState.PENDING, Instant.now());
+        return new OutboxEntry(messageId, destination, conversationId,
+                OutboxState.PENDING, Instant.now(), 0);
     }
 
     public String messageId() { return messageId; }
@@ -54,12 +78,22 @@ public final class OutboxEntry {
     public ConversationId conversationId() { return conversationId; }
     public OutboxState state() { return state; }
     public Instant createdAt() { return createdAt; }
+    public int attemptCount() { return attemptCount; }
 
     /**
      * Returns a copy of this entry with a new state.
      */
     public OutboxEntry withState(OutboxState newState) {
-        return new OutboxEntry(messageId, destination, conversationId, newState, createdAt);
+        return new OutboxEntry(messageId, destination, conversationId,
+                newState, createdAt, attemptCount);
+    }
+
+    /**
+     * Returns a copy of this entry with an updated attempt count.
+     */
+    public OutboxEntry withAttemptCount(int newAttemptCount) {
+        return new OutboxEntry(messageId, destination, conversationId,
+                state, createdAt, newAttemptCount);
     }
 
     @Override
@@ -77,6 +111,6 @@ public final class OutboxEntry {
     @Override
     public String toString() {
         return "OutboxEntry{messageId='" + messageId + "', dest=" + destination
-                + ", state=" + state + "}";
+                + ", state=" + state + ", attempts=" + attemptCount + "}";
     }
 }
