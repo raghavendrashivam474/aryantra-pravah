@@ -8,9 +8,9 @@
 
 **Aryntra Pravah** is designed to evolve from a Java standard-library networking and concurrency system into a resilient peer-to-peer distributed communication platform.
 
-* **Current Phase:** Phase 0 — Foundation & Project Bootstrap
+* **Current Phase:** Phase 0 - Foundation & Project Bootstrap (Completed)
 * **Initial Implementation:** Java CLI/TCP prototype (standard library)
-* **Long-term Model:** Peer ↔ Peer (transport-agnostic across BLE, LAN, and Internet)
+* **Long-term Model:** Peer <-> Peer (transport-agnostic across BLE, LAN, and Internet)
 
 ---
 
@@ -38,7 +38,6 @@ mvn clean compile
 ```
 
 ### Run Tests
-
 ```Bash
 mvn test
 ```
@@ -54,7 +53,6 @@ java -jar target/pravah-0.1.0-SNAPSHOT.jar
 ```
 
 ### Or via Maven Exec:
-
 ```Bash
 mvn exec:java -Dexec.mainClass="com.aryntra.pravah.Main"
 ```
@@ -62,28 +60,30 @@ mvn exec:java -Dexec.mainClass="com.aryntra.pravah.Main"
 ## 5. Repository Structure
 ```text
 aryantra-pravah/
-├── src/
-│   ├── main/java/com/aryntra/pravah/
-│   │   ├── core/         # Lifecycle, configuration, and orchestration
-│   │   ├── protocol/     # Protocol framing, wire format, and serialization
-│   │   ├── transport/    # Transport contracts and implementations
-│   │   ├── peer/         # Peer identity and registry
-│   │   ├── server/       # TCP Server foundation (Phase 1)
-│   │   └── client/       # CLI / Client runtime (Phase 1)
-│   └── test/java/        # Unit, smoke, and contract verification tests
-├── docs/
-│   ├── architecture/     # Architectural documentation & ADRs
-│   ├── protocol/         # Wire protocol specifications
-│   └── experiments/      # Contract verification benchmarks
-├── pom.xml               # Maven configuration (Java 21 target)
-└── README.md
+|-- src/
+|   |-- main/java/com/aryntra/pravah/
+|   |   |-- core/         # Lifecycle, configuration, and orchestration
+|   |   |-- protocol/     # Protocol framing, wire format, and serialization
+|   |   |-- transport/    # Transport contracts and implementations
+|   |   |-- peer/         # Peer identity and registry
+|   |   |-- server/       # TCP Server foundation (Phase 1)
+|   |   `-- client/       # CLI / Client runtime (Phase 1)
+|   `-- test/java/        # Unit, smoke, and contract verification tests
+|-- docs/
+|   |-- architecture/     # Architectural documentation & ADRs
+|   |-- protocol/         # Wire protocol specifications
+|   `-- experiments/      # Contract verification benchmarks
+|-- pom.xml               # Maven configuration (Java 21 target)
+`-- README.md
 ```
 
-## 6. Current Phase Status
+## 6. Phase 0 Sprint Status
 
 | Sprint | Objective | Status |
 | --- | --- | --- |
-| **S0.1** | Project Bootstrap (Repository, Build, Test setup) | In Progress |
-| **S0.2** | Architecture Contracts (Boundaries, ADR-001) | Pending |
-| **S0.3** | Core Runtime Foundation (Lifecycle, Config, Logging) | Pending |
-| **S0.4** | Architecture Verification (Transport contract smoke test) | Pending |
+| **S0.1** | Project Bootstrap (Repository, Build, Test setup) | [x] Completed |
+| **S0.2** | Architecture Contracts (Boundaries, ADR-001) | [x] Completed |
+| **S0.3** | Core Runtime Foundation (Lifecycle, Config, Logging) | [x] Completed |
+| **S0.4** | Architecture Verification (Transport contract smoke test) | [x] Completed |
+
+**Next Phase:** Phase 1 - TCP Foundation (S1.1 ServerSocket / Socket Client)
