@@ -233,6 +233,16 @@ public class TcpTransport implements Transport {
         TcpConnection conn = new TcpConnection(id, socket, os, rThread);
         connections.put(id, conn);
         rThread.start();
+
+        // Notify listener of new connection lifecycle event
+        TransportListener currentListener = this.listener;
+        if (currentListener != null) {
+            try {
+                currentListener.onConnectionOpened(id);
+            } catch (Exception ex) {
+                LOGGER.log(Level.WARNING, "Error in TransportListener.onConnectionOpened callback", ex);
+            }
+        }
     }
 
     private void readLoop(Socket socket, String id) {
@@ -276,6 +286,16 @@ public class TcpTransport implements Transport {
             closeQuietly(conn.socket);
             if (conn.readerThread != null && Thread.currentThread() != conn.readerThread) {
                 conn.readerThread.interrupt();
+            }
+
+            // Notify listener of connection close lifecycle event
+            TransportListener currentListener = this.listener;
+            if (currentListener != null) {
+                try {
+                    currentListener.onConnectionClosed(id);
+                } catch (Exception ex) {
+                    LOGGER.log(Level.WARNING, "Error in TransportListener.onConnectionClosed callback", ex);
+                }
             }
         }
     }
