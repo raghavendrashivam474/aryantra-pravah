@@ -1,10 +1,6 @@
 package com.aryntra.pravah.messaging;
 
-import com.aryntra.pravah.messaging.reliability.DeliveryOutbox;
-import com.aryntra.pravah.messaging.reliability.DeliveryRetryManager;
-import com.aryntra.pravah.messaging.reliability.InMemoryDeliveryOutbox;
-import com.aryntra.pravah.messaging.reliability.OutboxEntry;
-import com.aryntra.pravah.messaging.reliability.OutboxState;
+import com.aryntra.pravah.messaging.reliability.*;
 import com.aryntra.pravah.peer.PeerConnectionCoordinator;
 import com.aryntra.pravah.peer.PeerId;
 import com.aryntra.pravah.peer.PeerRouter;
@@ -13,10 +9,7 @@ import com.aryntra.pravah.protocol.MessageType;
 import com.aryntra.pravah.protocol.ProtocolListener;
 
 import java.nio.charset.StandardCharsets;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.logging.Logger;
@@ -24,8 +17,8 @@ import java.util.logging.Logger;
 /**
  * Default implementation of the ApplicationMessagingService.
  * Integrates message lifecycle state tracking, persistent history storage,
- * delivery intent tracking via DeliveryOutbox, group communication fan-out,
- * and automated reconnect delivery retries via DeliveryRetryManager.
+ * single-peer and per-recipient group outbox delivery queues,
+ * automated reconnect retries, and delivery observability.
  */
 public class DefaultApplicationMessagingService implements ApplicationMessagingService {
 
@@ -39,25 +32,25 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
     private final PeerRouter peerRouter;
     private final MessageHistoryStore historyStore;
     private final DeliveryOutbox outbox;
+    private final GroupDeliveryOutbox groupOutbox;
     private final DeliveryRetryManager retryManager;
     private final ConversationManager conversationManager;
     private final List<ApplicationMessageListener> messageListeners = new CopyOnWriteArrayList<>();
     private final List<MessageLifecycleListener> lifecycleListeners = new CopyOnWriteArrayList<>();
 
-    // Tracks state of outgoing/managed messages
     private final Map<String, MessageState> messageStates = new ConcurrentHashMap<>();
 
     public DefaultApplicationMessagingService(PeerId localPeerId,
                                               PeerRouter peerRouter,
                                               PeerConnectionCoordinator coordinator) {
-        this(localPeerId, peerRouter, coordinator, new InMemoryMessageHistoryStore(), new InMemoryDeliveryOutbox());
+        this(localPeerId, peerRouter, coordinator, new InMemoryMessageHistoryStore(), new InMemoryDeliveryOutbox(), new InMemoryGroupDeliveryOutbox());
     }
 
     public DefaultApplicationMessagingService(PeerId localPeerId,
                                               PeerRouter peerRouter,
                                               PeerConnectionCoordinator coordinator,
                                               MessageHistoryStore historyStore) {
-        this(localPeerId, peerRouter, coordinator, historyStore, new InMemoryDeliveryOutbox());
+        this(localPeerId, peerRouter, coordinator, historyStore, new InMemoryDeliveryOutbox(), new InMemoryGroupDeliveryOutbox());
     }
 
     public DefaultApplicationMessagingService(PeerId localPeerId,
@@ -65,16 +58,27 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                                               PeerConnectionCoordinator coordinator,
                                               MessageHistoryStore historyStore,
                                               DeliveryOutbox outbox) {
+        this(localPeerId, peerRouter, coordinator, historyStore, outbox, new InMemoryGroupDeliveryOutbox());
+    }
+
+    public DefaultApplicationMessagingService(PeerId localPeerId,
+                                              PeerRouter peerRouter,
+                                              PeerConnectionCoordinator coordinator,
+                                              MessageHistoryStore historyStore,
+                                              DeliveryOutbox outbox,
+                                              GroupDeliveryOutbox groupOutbox) {
         this.localPeerId = Objects.requireNonNull(localPeerId, "localPeerId must not be null");
         this.peerRouter = Objects.requireNonNull(peerRouter, "peerRouter must not be null");
         this.historyStore = Objects.requireNonNull(historyStore, "historyStore must not be null");
         this.outbox = Objects.requireNonNull(outbox, "outbox must not be null");
+        this.groupOutbox = Objects.requireNonNull(groupOutbox, "groupOutbox must not be null");
         this.conversationManager = new ConversationManager(localPeerId);
         Objects.requireNonNull(coordinator, "coordinator must not be null");
 
         this.retryManager = new DeliveryRetryManager(
                 localPeerId,
                 outbox,
+                groupOutbox,
                 historyStore,
                 peerRouter,
                 (messageId, success) -> {
@@ -83,7 +87,8 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                     } else {
                         updateState(messageId, MessageState.FAILED);
                     }
-                }
+                },
+                DeliveryRetryManager.DEFAULT_MAX_ATTEMPTS
         );
 
         // Bind incoming logical session events
@@ -118,12 +123,24 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         return outbox;
     }
 
+    public GroupDeliveryOutbox getGroupOutbox() {
+        return groupOutbox;
+    }
+
     public DeliveryRetryManager getRetryManager() {
         return retryManager;
     }
 
     public ConversationManager getConversationManager() {
         return conversationManager;
+    }
+
+    public void addRetryAttemptListener(RetryAttemptListener listener) {
+        retryManager.addRetryAttemptListener(listener);
+    }
+
+    public void removeRetryAttemptListener(RetryAttemptListener listener) {
+        retryManager.removeRetryAttemptListener(listener);
     }
 
     @Override
@@ -175,13 +192,11 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         } catch (Exception e) {
             LOGGER.warning(() -> "Failed to route application message " + message.messageId() + ": " + e.getMessage());
             updateState(message.messageId(), MessageState.FAILED);
-            // Notice: OutboxEntry remains PENDING in outbox, preserving delivery intent
         }
     }
 
     /**
-     * Application-layer fan-out implementation for Group Messages.
-     * Guarantees message delivery without extending core PeerRouter constructs.
+     * Application-layer fan-out implementation for Group Messages with per-recipient delivery tracking.
      */
     private void sendGroupMessage(ApplicationMessage message) {
         ConversationId groupId = message.conversationId();
@@ -196,8 +211,23 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         }
         updateState(message.messageId(), MessageState.CREATED);
 
-        // 2. Wire frame group message payload:
-        // [0x03 (byte)][2-byte groupId len][groupId (UTF-8)][content (UTF-8)]
+        // 2. Prepare target recipients (all participants except self)
+        Set<PeerId> participants = group.participants();
+        Set<PeerId> targets = new HashSet<>();
+        for (PeerId p : participants) {
+            if (!p.equals(localPeerId)) {
+                targets.add(p);
+            }
+        }
+
+        // 3. Enqueue per-recipient delivery intents
+        try {
+            groupOutbox.enqueueGroupMessage(message.messageId(), groupId, targets);
+        } catch (Exception e) {
+            LOGGER.fine("Group outbox intents already enqueued: " + message.messageId());
+        }
+
+        // 4. Wire frame group payload
         byte[] groupIdBytes = groupId.value().getBytes(StandardCharsets.UTF_8);
         byte[] appTextBytes = message.toPayload();
 
@@ -210,15 +240,10 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         System.arraycopy(groupIdBytes, 0, framedPayload, 3, groupIdBytes.length);
         System.arraycopy(appTextBytes, 0, framedPayload, 3 + groupIdBytes.length, appTextBytes.length);
 
-        // 3. Dispatch to all participants except local self
-        Set<PeerId> participants = group.participants();
+        // 5. Dispatch immediate attempt to all targets
         boolean atLeastOneDispatched = false;
 
-        for (PeerId participant : participants) {
-            if (participant.equals(localPeerId)) {
-                continue;
-            }
-
+        for (PeerId participant : targets) {
             Message protocolMessage = new Message(
                     MessageType.MESSAGE,
                     localPeerId.value(),
@@ -232,6 +257,7 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                 atLeastOneDispatched = true;
             } catch (Exception e) {
                 LOGGER.warning(() -> "Failed to route group message " + message.messageId() + " to " + participant.value() + ": " + e.getMessage());
+                // Recipient remains PENDING in groupOutbox for retry upon reconnection
             }
         }
 
@@ -315,7 +341,7 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
         byte appType = payload[0];
         switch (appType) {
             case APP_MSG_CHAT -> handleInboundChat(senderPeerIdStr, protocolMessage);
-            case APP_MSG_ACK -> handleInboundAck(protocolMessage);
+            case APP_MSG_ACK -> handleInboundAck(senderPeerIdStr, protocolMessage);
             case APP_MSG_GROUP_CHAT -> handleInboundGroupChat(senderPeerIdStr, protocolMessage);
             default -> LOGGER.warning("Unknown application payload type: " + appType);
         }
@@ -361,12 +387,10 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
             PeerId sender = PeerId.of(senderPeerIdStr);
             byte[] rawPayload = protocolMessage.payload();
 
-            // Extract group ID length and value
             int groupLen = ((rawPayload[1] & 0xFF) << 8) | (rawPayload[2] & 0xFF);
             String groupIdStr = new String(rawPayload, 3, groupLen, StandardCharsets.UTF_8);
             ConversationId groupId = new ConversationId(groupIdStr);
 
-            // Extract message content
             int contentOffset = 3 + groupLen;
             byte[] textPayload = new byte[rawPayload.length - contentOffset];
             System.arraycopy(rawPayload, contentOffset, textPayload, 0, textPayload.length);
@@ -378,7 +402,6 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                     groupId
             );
 
-            // Reconstruct / Auto-reconcile group locally if not present
             if (conversationManager.getGroupConversation(groupId).isEmpty()) {
                 GroupConversation autoReconstructed = new GroupConversation(
                         groupId,
@@ -388,14 +411,12 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                 conversationManager.registerGroupConversation(autoReconstructed);
             }
 
-            // Persist
             try {
                 historyStore.save(appMessage, MessageState.DELIVERED);
             } catch (Exception e) {
                 LOGGER.fine("Group message already in store: " + appMessage.messageId());
             }
 
-            // Notify
             for (ApplicationMessageListener listener : messageListeners) {
                 try {
                     listener.onMessage(appMessage);
@@ -404,22 +425,38 @@ public class DefaultApplicationMessagingService implements ApplicationMessagingS
                 }
             }
 
-            // Reply with delivery receipt
             sendApplicationAck(sender, protocolMessage.messageId());
         } catch (Exception e) {
             LOGGER.warning("Inbound group parsing failed: " + e.getMessage());
         }
     }
 
-    private void handleInboundAck(Message protocolMessage) {
+    private void handleInboundAck(String senderPeerIdStr, Message protocolMessage) {
         byte[] rawPayload = protocolMessage.payload();
         byte[] ackedIdBytes = new byte[rawPayload.length - 1];
         System.arraycopy(rawPayload, 1, ackedIdBytes, 0, ackedIdBytes.length);
         String ackedMessageId = new String(ackedIdBytes, StandardCharsets.UTF_8);
 
-        LOGGER.fine(() -> "Received remote delivery receipt for message " + ackedMessageId);
-        updateState(ackedMessageId, MessageState.DELIVERED);
-        outbox.markCompleted(ackedMessageId);
+        LOGGER.fine(() -> "Received remote delivery receipt for message " + ackedMessageId + " from " + senderPeerIdStr);
+
+        // 1. Direct message outbox completion
+        Optional<OutboxEntry> directEntry = outbox.findByMessageId(ackedMessageId);
+        if (directEntry.isPresent()) {
+            outbox.markCompleted(ackedMessageId);
+            updateState(ackedMessageId, MessageState.DELIVERED);
+            return;
+        }
+
+        // 2. Group message outbox completion (per recipient)
+        try {
+            PeerId sender = PeerId.of(senderPeerIdStr);
+            groupOutbox.markRecipientCompleted(ackedMessageId, sender);
+            if (groupOutbox.allRecipientsCompleted(ackedMessageId)) {
+                updateState(ackedMessageId, MessageState.DELIVERED);
+            }
+        } catch (Exception e) {
+            LOGGER.warning("Error processing group ACK: " + e.getMessage());
+        }
     }
 
     private void sendApplicationAck(PeerId recipient, String messageIdToAck) {
