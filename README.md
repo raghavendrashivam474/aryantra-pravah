@@ -8,7 +8,7 @@
 
 **Aryntra Pravah** is designed to evolve from a Java standard-library networking and concurrency system into a resilient peer-to-peer distributed communication platform.
 
-* **Current Phase:** Phase 5 - Reliable Delivery Layer (Completed)
+* **Current Phase:** Phase 6 - Connectivity Evolution (Completed S6.1-S6.3)
 * **Initial Implementation:** Java CLI/TCP prototype (standard library)
 * **Long-term Model:** Peer <-> Peer (transport-agnostic across BLE, LAN, and Internet)
 
@@ -65,6 +65,7 @@ aryantra-pravah/
 |   |   |-- core/         # Lifecycle, configuration, and orchestration
 |   |   |-- protocol/     # Protocol framing, wire format, and serialization
 |   |   |-- transport/    # Transport contracts and implementations
+|   |   |-- connectivity/ # Path model, multi-path peer, capability model (Phase 6)
 |   |   |-- peer/         # Peer identity, registry, presence, router (Phase 3)
 |   |   |-- messaging/    # Application messages, conversations, lifecycle (Phase 4)
 |   |   |   |-- reliability/ # Delivery outbox, retry, group reliability (Phase 5)
@@ -90,6 +91,13 @@ aryantra-pravah/
 | **Phase 3** | Peer Communication Substrate & Lifecycle (S3.1–S3.6) | ✅ Completed | 179/179 |
 | **Phase 4** | Application Messaging, Conversations & Lifecycle (S4.1–S4.6) | ✅ Completed | 230/230 |
 | **Phase 5** | Reliable Delivery, Bounded Retry & Group Reliability (S5.1–S5.6) | ✅ Completed | 271/271 |
+| **Phase 6** | Connectivity Model, Multi-Path & Capabilities (S6.1–S6.3) | ✅ Completed | 291/291 |
+
+### Phase 6 Breakdown
+* **S6.1** Connectivity Model (EndpointAddress, PathId, PathState, ConnectivityPath, PeerConnectivity)
+* **S6.2** Multi-Path Peer Representation (PeerConnectivityRegistry mapping single stable PeerId to multiple concurrent paths)
+* **S6.3** Transport Capability Model (TransportCapabilities modeling properties like 
+eliable or connectionOriented; Transport default method, TcpTransport capabilities)
 
 ### Phase 4 Breakdown
 * **S4.1** Application Messaging Boundary (`ApplicationMessage`, `ApplicationMessagingService`, `ApplicationMessageListener`)

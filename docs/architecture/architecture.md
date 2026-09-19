@@ -106,6 +106,15 @@ Aryntra Pravah is a mobile-first, transport-agnostic distributed communication p
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────┐
+│                    CONNECTIVITY LAYER                   │
+│                                                         │
+│  EndpointAddress · PathId · PathState · ConnectivityPath│
+│  PeerConnectivity · PeerConnectivityRegistry            │
+│  TransportCapabilities                                  │
+└────────────────────────────┬────────────────────────────┘
+                             │
+                             ▼
+┌─────────────────────────────────────────────────────────┐
 │                   TRANSPORT LAYER                       │
 │                                                         │
 │  Transport · TransportListener · TcpTransport           │
@@ -114,3 +123,22 @@ Aryntra Pravah is a mobile-first, transport-agnostic distributed communication p
                              ▼
                   Network / TCP Sockets
 ```
+## 10. Phase 6 — Connectivity Evolution Architecture (S6.1–S6.3)
+* **Connectivity Model (S6.1 / ADR-011):**
+  - EndpointAddress represents WHERE a peer can be contacted (host + port + transport scheme), independent of active connections.
+  - ConnectivityPath represents a specific way to reach a peer, binding PathId, PeerId, transport name, endpoint, state (CANDIDATE, ACTIVE, INACTIVE), and optional connectionId.
+  - PeerConnectivity aggregates all known paths for a single PeerId.
+  - Separates identity (PeerId) from address (EndpointAddress) from connection (connectionId) from session (PeerState).
+* **Multi-Path Peer Representation (S6.2):**
+  - PeerConnectivityRegistry maps PeerId → PeerConnectivity, allowing one stable peer identity to have multiple concurrent paths across different transports and endpoints.
+  - Removing one path does not delete the peer or affect other paths.
+  - Fully additive: existing PeerRecord, PeerRegistry, and PeerRouter remain unchanged.
+* **Transport Capability Model (S6.3):**
+  - TransportCapabilities immutable record with four boolean properties: eliable, connectionOriented, unicast, supportsMultiplexing.
+  - Transport interface gains a backward-compatible default getCapabilities() method.
+  - TcpTransport truthfully reports: reliable=true, connectionOriented=true, unicast=true, supportsMultiplexing=false.
+  - No speculative capability explosion; only properties with concrete routing consumers are modeled.
+* **What Was NOT Implemented:**
+  - No path selection, ranking, scoring, or automatic failover.
+  - No Bluetooth, QUIC, WebRTC, or Internet traversal.
+  - No changes to protocol, messaging, or reliability contracts.
