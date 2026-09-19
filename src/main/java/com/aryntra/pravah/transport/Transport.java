@@ -17,4 +17,15 @@ public interface Transport {
     void send(String destinationId, byte[] payload);
 
     void setListener(TransportListener listener);
+
+    /**
+     * Returns the behavioral capabilities of this transport.
+     *
+     * <p>Defaults to standard TCP-like capabilities for backward compatibility.</p>
+     *
+     * @return the immutable transport capabilities
+     */
+    default TransportCapabilities getCapabilities() {
+        return TransportCapabilities.defaultCapabilities();
+    }
 }

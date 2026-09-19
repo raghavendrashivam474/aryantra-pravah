@@ -2,6 +2,7 @@ package com.aryntra.pravah.transport.tcp;
 
 import com.aryntra.pravah.core.PravahException;
 import com.aryntra.pravah.transport.Transport;
+import com.aryntra.pravah.transport.TransportCapabilities;
 import com.aryntra.pravah.transport.TransportListener;
 
 import java.io.IOException;
@@ -72,6 +73,11 @@ public class TcpTransport implements Transport {
     @Override
     public String getName() {
         return TRANSPORT_NAME;
+    }
+
+    @Override
+    public TransportCapabilities getCapabilities() {
+        return TransportCapabilities.tcp();
     }
 
     @Override
