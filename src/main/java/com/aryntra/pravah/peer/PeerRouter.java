@@ -1,6 +1,7 @@
 package com.aryntra.pravah.peer;
 
 import com.aryntra.pravah.connectivity.ConnectivityPath;
+import com.aryntra.pravah.connectivity.PathSelectionPolicy;
 import com.aryntra.pravah.connectivity.PeerConnectivity;
 import com.aryntra.pravah.connectivity.PeerConnectivityRegistry;
 import com.aryntra.pravah.protocol.FrameEncoder;
@@ -9,7 +10,6 @@ import com.aryntra.pravah.protocol.MessageEncoder;
 import com.aryntra.pravah.protocol.MessageType;
 import com.aryntra.pravah.transport.Transport;
 
-import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -27,7 +27,7 @@ import java.util.Optional;
  *     ▼
  * PeerRouter
  *     │
- *     ├── 1. Resolve path via PeerConnectivityRegistry (S6.5 deterministic active path selection)
+ *     ├── 1. Resolve path via PeerConnectivityRegistry &amp; PathSelectionPolicy
  *     │      OR fallback to PeerRegistry -> PeerRecord -> connectionId
  *     ├── 2. Encode Message via MessageEncoder
  *     ├── 3. Frame binary data via FrameEncoder
@@ -37,18 +37,20 @@ import java.util.Optional;
  *
  * S3.3 - Phase 3: Peer-to-Peer Routing
  * S6.5 - Phase 6: Deterministic Path Selection (ADR 001)
+ * S8.5 - Phase 8: Multi-Path Operation & Path Selection Policies (ADR 015)
  */
 public class PeerRouter {
 
     private final PeerRegistry registry;
     private final Transport transport;
     private final PeerConnectivityRegistry connectivityRegistry; // nullable for backward compat
+    private final PathSelectionPolicy selectionPolicy;
 
     /**
      * Phase 3 legacy constructor — routes via PeerRegistry only.
      */
     public PeerRouter(PeerRegistry registry, Transport transport) {
-        this(registry, transport, null);
+        this(registry, transport, null, PathSelectionPolicy.defaultPolicy());
     }
 
     /**
@@ -59,9 +61,22 @@ public class PeerRouter {
      * @param connectivityRegistry the connectivity registry (may be null for fallback mode)
      */
     public PeerRouter(PeerRegistry registry, Transport transport, PeerConnectivityRegistry connectivityRegistry) {
+        this(registry, transport, connectivityRegistry, PathSelectionPolicy.defaultPolicy());
+    }
+
+    /**
+     * S8.5 constructor — enables configurable deterministic path selection policies.
+     *
+     * @param registry             the peer registry (must not be null)
+     * @param transport            the transport implementation (must not be null)
+     * @param connectivityRegistry the connectivity registry (may be null for fallback mode)
+     * @param selectionPolicy      the path selection policy (must not be null)
+     */
+    public PeerRouter(PeerRegistry registry, Transport transport, PeerConnectivityRegistry connectivityRegistry, PathSelectionPolicy selectionPolicy) {
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.connectivityRegistry = connectivityRegistry;
+        this.selectionPolicy = Objects.requireNonNull(selectionPolicy, "selectionPolicy must not be null");
     }
 
     /**
@@ -77,7 +92,6 @@ public class PeerRouter {
         Objects.requireNonNull(message, "message must not be null");
 
         String connectionId = resolveConnectionId(destination);
-
         try {
             byte[] encoded = MessageEncoder.encode(message);
             byte[] framed = FrameEncoder.encode(encoded);
@@ -92,11 +106,11 @@ public class PeerRouter {
     /**
      * Resolves the active transport connection ID for a given destination peer.
      *
-     * <p>Selection Policy (ADR 001):
+     * <p>Selection Policy (ADR 001 / ADR 015):
      * <ol>
      *   <li>If {@code connectivityRegistry} is present, look up active paths for {@code destination}.</li>
-     *   <li>Sort active paths deterministically by {@code PathId.value()}.</li>
-     *   <li>Select the first active path's {@code connectionId}.</li>
+     *   <li>Apply configured {@link PathSelectionPolicy} to choose the active path.</li>
+     *   <li>Select the active path's {@code connectionId}.</li>
      *   <li>If no active path is found, fall back to legacy {@link PeerRegistry}.</li>
      *   <li>If both fail, throw {@link PeerRoutingException}.</li>
      * </ol>
@@ -113,12 +127,9 @@ public class PeerRouter {
             if (maybeConnectivity.isPresent()) {
                 List<ConnectivityPath> activePaths = maybeConnectivity.get().activePaths();
                 if (!activePaths.isEmpty()) {
-                    // Deterministic selection: sort by PathId string value
-                    ConnectivityPath selected = activePaths.stream()
-                            .min(Comparator.comparing(p -> p.pathId().value()))
-                            .orElse(activePaths.get(0));
-                    if (selected.connectionId() != null && !selected.connectionId().isBlank()) {
-                        return selected.connectionId();
+                    Optional<ConnectivityPath> selected = selectionPolicy.selectPath(destination, activePaths);
+                    if (selected.isPresent() && selected.get().connectionId() != null && !selected.get().connectionId().isBlank()) {
+                        return selected.get().connectionId();
                     }
                 }
             }
@@ -162,5 +173,9 @@ public class PeerRouter {
 
     public PeerConnectivityRegistry connectivityRegistry() {
         return connectivityRegistry;
+    }
+
+    public PathSelectionPolicy selectionPolicy() {
+        return selectionPolicy;
     }
 }
