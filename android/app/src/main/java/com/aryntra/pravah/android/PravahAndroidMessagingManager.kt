@@ -7,143 +7,139 @@ import com.aryntra.pravah.messaging.InMemoryMessageHistoryStore
 import com.aryntra.pravah.messaging.MessageHistoryStore
 import com.aryntra.pravah.messaging.reliability.DeliveryOutbox
 import com.aryntra.pravah.messaging.reliability.InMemoryDeliveryOutbox
+import com.aryntra.pravah.messaging.reliability.OutboxState
 import com.aryntra.pravah.peer.PeerConnectionCoordinator
 import com.aryntra.pravah.peer.PeerId
 import com.aryntra.pravah.peer.PeerRegistry
 import com.aryntra.pravah.peer.PeerRouter
+import com.aryntra.pravah.peer.discovery.DiscoveredPeer
+import com.aryntra.pravah.peer.discovery.LanPeerDiscovery
+import com.aryntra.pravah.peer.discovery.PeerDiscoveryListener
 import com.aryntra.pravah.peer.presence.PeerPresenceBridge
 import com.aryntra.pravah.peer.presence.PeerPresenceManager
 import com.aryntra.pravah.protocol.FrameEncoder
 import com.aryntra.pravah.protocol.Message
 import com.aryntra.pravah.protocol.MessageEncoder
 import com.aryntra.pravah.protocol.MessageType
+import com.aryntra.pravah.protocol.PeerState
 import com.aryntra.pravah.transport.tcp.TcpTransport
+import java.util.Collections
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.logging.Logger
 
 /**
- * S7.4 - Android Messaging Integration Manager.
- *
- * Composes existing Pravah components to provide end-to-end messaging
- * on the Android runtime. No new protocol, routing, or reliability
- * architecture is introduced. All components are reused from the
- * existing core stack.
- *
- * Component wiring:
- *   TcpTransport
- *     -> PeerConnectionCoordinator (framing + protocol sessions)
- *       -> DefaultApplicationMessagingService (app messages + ACK + retry)
- *         -> PeerRouter (routing via PeerRegistry)
- *           -> TcpTransport (physical delivery)
- *
- * Invariant: PeerId remains the sole application-level addressing primitive.
- * No socket, IP, or connection ID is exposed to callers.
+ * S7.4/S7.5 - Android Messaging + Discovery Integration Manager.
+ * Thin composition of existing Pravah components. No new architecture.
  */
 class PravahAndroidMessagingManager(
     val localPeerId: PeerId,
     val host: String = "127.0.0.1",
-    val port: Int = 0
+    val port: Int = 0,
+    val discoveryPort: Int = 49152
 ) : AutoCloseable {
 
     private val logger = Logger.getLogger(PravahAndroidMessagingManager::class.java.name)
 
-    // Transport layer (existing TcpTransport - no Android-specific transport)
     val transport = TcpTransport(host, port)
-
-    // Peer identity and presence (existing components)
     val registry = PeerRegistry()
     val presenceManager = PeerPresenceManager(2000L)
     val presenceBridge = PeerPresenceBridge(registry, presenceManager)
-
-    // Protocol coordination (existing - handles framing, session state, JOIN/MESSAGE/LEAVE)
     val coordinator = PeerConnectionCoordinator(transport, registry, presenceBridge)
-
-    // Routing (existing - resolves PeerId to connectionId to transport)
     val router = PeerRouter(registry, transport)
-
-    // Application messaging with in-memory stores (Android-safe, no SQLite-JDBC)
     val historyStore: MessageHistoryStore = InMemoryMessageHistoryStore()
     val outbox: DeliveryOutbox = InMemoryDeliveryOutbox()
     val messaging = DefaultApplicationMessagingService(
         localPeerId, router, coordinator, historyStore, outbox
     )
 
+    // Lazy discovery engine created when bound port is known
+    private var discoveryEngine: LanPeerDiscovery? = null
+    private val _discoveredPeers = CopyOnWriteArrayList<DiscoveredPeer>()
+    val discoveredPeers: List<DiscoveredPeer> get() = Collections.unmodifiableList(_discoveredPeers)
+
+    private var discoveryListener: ((DiscoveredPeer) -> Unit)? = null
+
     val boundPort: Int get() = transport.boundPort
     val isRunning: Boolean get() = transport.isRunning
 
-    /**
-     * Starts the transport and presence manager.
-     */
     fun start() {
-        logger.info("Starting Android Messaging Manager for peer " + localPeerId.value())
         transport.start()
         presenceManager.start()
     }
 
-    /**
-     * Stops all managed components.
-     */
     fun stop() {
-        logger.info("Stopping Android Messaging Manager for peer " + localPeerId.value())
+        stopDiscovery()
         presenceManager.stop()
         transport.stop()
     }
 
-    /**
-     * Establishes a TCP connection to a remote peer.
-     */
+    @Synchronized
+    fun startDiscovery() {
+        if (discoveryEngine == null || !discoveryEngine!!.isRunning) {
+            val tcpPort = if (boundPort > 0) boundPort else (if (port > 0) port else 8080)
+            discoveryEngine = LanPeerDiscovery(localPeerId, tcpPort, discoveryPort, 200L).apply {
+                registerListener(object : PeerDiscoveryListener {
+                    override fun onPeerDiscovered(peer: DiscoveredPeer) {
+                        if (peer.peerId() != localPeerId && _discoveredPeers.none { it.peerId() == peer.peerId() }) {
+                            _discoveredPeers.add(peer)
+                            presenceBridge.onPeerDiscovered(peer)
+                            discoveryListener?.invoke(peer)
+                        }
+                    }
+                })
+                start()
+            }
+        }
+    }
+
+    @Synchronized
+    fun stopDiscovery() {
+        discoveryEngine?.stop()
+        discoveryEngine = null
+    }
+
+    val isDiscovering: Boolean get() = discoveryEngine?.isRunning ?: false
+
+    fun setDiscoveryListener(listener: (DiscoveredPeer) -> Unit) {
+        discoveryListener = listener
+    }
+
     fun connectTo(remoteHost: String, remotePort: Int) {
         transport.connect(remoteHost, remotePort)
     }
 
-    /**
-     * Performs the outbound JOIN handshake with a remote peer.
-     * Registers the remote peer in the local registry and sends a JOIN message.
-     *
-     * @param remotePeerId the logical identity of the remote peer
-     * @param connectionId the transport connection ID (typically "host:port")
-     */
     fun sendJoin(remotePeerId: PeerId, connectionId: String) {
         registry.register(remotePeerId, connectionId)
         val joinMsg = Message(
-            MessageType.JOIN,
-            localPeerId.value(),
-            "join-" + localPeerId.value() + "-" + remotePeerId.value(),
-            ByteArray(0)
+            MessageType.JOIN, localPeerId.value(),
+            "join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
         )
-        val framed = FrameEncoder.encode(MessageEncoder.encode(joinMsg))
-        transport.send(connectionId, framed)
+        transport.send(connectionId, FrameEncoder.encode(MessageEncoder.encode(joinMsg)))
     }
 
-    /**
-     * Sends a reply JOIN back to a peer that initiated the handshake.
-     * Uses the PeerRouter which resolves via registry after inbound JOIN.
-     */
     fun replyJoin(remotePeerId: PeerId) {
         val joinMsg = Message(
-            MessageType.JOIN,
-            localPeerId.value(),
-            "reply-join-" + localPeerId.value() + "-" + remotePeerId.value(),
-            ByteArray(0)
+            MessageType.JOIN, localPeerId.value(),
+            "reply-join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
         )
         router.send(remotePeerId, joinMsg)
     }
 
-    /**
-     * Sends an application text message to a remote peer.
-     * Delegates entirely to the existing DefaultApplicationMessagingService.
-     */
+    fun getSessionState(peerIdValue: String): PeerState? {
+        return coordinator.sessionManager.getPeerState(peerIdValue)
+    }
+
+    fun isDelivered(messageId: String): Boolean {
+        return outbox.findByMessageId(messageId).map { it.state() == OutboxState.COMPLETED }.orElse(false)
+    }
+
     fun sendText(destination: PeerId, content: String): ApplicationMessage {
         return messaging.sendText(destination, content)
     }
 
-    /**
-     * Registers a listener for incoming application messages.
-     */
     fun addMessageListener(listener: ApplicationMessageListener) {
         messaging.addListener(listener)
     }
 
-    override fun close() {
-        stop()
-    }
+    override fun close() { stop() }
 }
