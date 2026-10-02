@@ -1,0 +1,28 @@
+﻿# Gradle files
+.gradle/
+build/
+app/build/
+
+# Local configuration
+local.properties
+
+# Log files
+*.log
+
+# Android Studio / IntelliJ files
+.idea/
+*.iml
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Device-specific files
+*.apk
+*.ap_
+*.aab
+
+# Keep libs folder, but ignore core jars if generated locally
+# (Core jar is built fresh via maven)
+!libs/
+libs/pravah-core.jar
