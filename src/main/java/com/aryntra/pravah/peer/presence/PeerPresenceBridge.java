@@ -36,14 +36,14 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
     private final PeerConnectivityRegistry connectivityRegistry; // nullable for backward compat
 
     /**
-     * Original Phase 3 constructor — no connectivity tracking.
+     * Original Phase 3 constructor â€” no connectivity tracking.
      */
     public PeerPresenceBridge(PeerRegistry registry, PeerPresenceManager presenceManager) {
         this(registry, presenceManager, null);
     }
 
     /**
-     * S6.4 constructor — enables connectivity path lifecycle tracking.
+     * S6.4 constructor â€” enables connectivity path lifecycle tracking.
      */
     public PeerPresenceBridge(PeerRegistry registry,
                               PeerPresenceManager presenceManager,
