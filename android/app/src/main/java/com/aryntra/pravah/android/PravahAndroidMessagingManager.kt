@@ -36,10 +36,6 @@ import java.util.Collections
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.logging.Logger
 
-/**
- * S8.6 - Android Hybrid Messaging Manager.
- * Orchestrates multi-path routing across TCP and Bluetooth RFCOMM via CompositeTransport.
- */
 class PravahAndroidMessagingManager(
     val localPeerId: PeerId,
     val host: String = "0.0.0.0",
@@ -51,11 +47,8 @@ class PravahAndroidMessagingManager(
 
     private val logger = Logger.getLogger(PravahAndroidMessagingManager::class.java.name)
 
-    // Concrete underlying transports
     val tcpTransport: TcpTransport = TcpTransport(host, port)
     val bluetoothTransport: AndroidBluetoothRfcommTransport = AndroidBluetoothRfcommTransport(localMacAddress)
-
-    // Unified Composite Transport
     val compositeTransport: Transport = customTransport ?: CompositeTransport(tcpTransport, bluetoothTransport)
 
     val registry = PeerRegistry()
@@ -63,10 +56,8 @@ class PravahAndroidMessagingManager(
     val connectivityRegistry = PeerConnectivityRegistry()
     val presenceBridge = PeerPresenceBridge(registry, presenceManager, connectivityRegistry)
 
-    // Path selection policy: prefer high-bandwidth TCP over Bluetooth, with seamless failover
     val pathPolicy: PathSelectionPolicy = PathSelectionPolicy.preferSchemes("tcp", "bluetooth", "bt")
 
-    // Override setProtocolListener to chain listeners and auto-reply initial JOINs
     val coordinator = object : PeerConnectionCoordinator(compositeTransport, registry, presenceBridge) {
         private var downstreamListener: ProtocolListener? = null
 
@@ -74,10 +65,21 @@ class PravahAndroidMessagingManager(
             this.downstreamListener = listener
             super.setProtocolListener(object : ProtocolListener {
                 override fun onPeerJoined(peerIdStr: String, message: Message) {
+                    val remotePeer = PeerId.of(peerIdStr)
+                    
+                    // Normalize connection ID & bind
+                    getConnectionIdForPeer(remotePeer).ifPresent { rawConnId ->
+                        val connId = cleanConnId(rawConnId)
+                        presenceBridge.handlePeerConnected(remotePeer, connId)
+                    }
+
+                    // Clean up any orphaned temporary remote-bt-node entries
+                    cleanOrphanedBtNode(remotePeer)
+
                     downstreamListener?.onPeerJoined(peerIdStr, message)
+
                     if (message != null && message.messageId().startsWith("join-")) {
                         try {
-                            val remotePeer = PeerId.of(peerIdStr)
                             logger.info("Auto-replying reciprocal JOIN to $peerIdStr")
                             replyJoin(remotePeer)
                         } catch (e: Exception) {
@@ -87,6 +89,10 @@ class PravahAndroidMessagingManager(
                 }
 
                 override fun onMessageReceived(peerIdStr: String, message: Message) {
+                    val remotePeer = PeerId.of(peerIdStr)
+                    getConnectionIdForPeer(remotePeer).ifPresent { rawConnId ->
+                        presenceBridge.handlePeerConnected(remotePeer, cleanConnId(rawConnId))
+                    }
                     downstreamListener?.onMessageReceived(peerIdStr, message)
                 }
 
@@ -154,60 +160,43 @@ class PravahAndroidMessagingManager(
         discoveryListener = listener
     }
 
-    /**
-     * Connects via TCP and registers path in ConnectivityRegistry.
-     */
     fun connectToTcp(remoteHost: String, remotePort: Int, remotePeerId: PeerId? = null): String {
         tcpTransport.connect(remoteHost, remotePort)
         val connId = "$remoteHost:$remotePort"
         if (remotePeerId != null) {
-            val path = ConnectivityPath.active(
-                PathId.of("path-tcp-$connId"),
-                remotePeerId,
-                "tcp",
-                EndpointAddress.tcp(remoteHost, remotePort),
-                connId
-            )
-            connectivityRegistry.registerPath(remotePeerId, path)
+            presenceBridge.handlePeerConnected(remotePeerId, connId)
         }
         return connId
     }
 
-    /**
-     * Backward-compatible alias for connectToTcp.
-     */
     fun connectTo(remoteHost: String, remotePort: Int) {
         connectToTcp(remoteHost, remotePort)
     }
 
-    /**
-     * Connects via Bluetooth RFCOMM and registers path in ConnectivityRegistry.
-     */
     fun connectToBluetooth(remoteMac: String, remotePeerId: PeerId? = null): String {
         bluetoothTransport.connect(remoteMac)
         val cleanMac = remoteMac.removePrefix("bt:").trim().uppercase()
         val connId = "bt:$cleanMac"
         if (remotePeerId != null) {
-            val path = ConnectivityPath.active(
-                PathId.of("path-bt-$cleanMac"),
-                remotePeerId,
-                "bluetooth",
-                EndpointAddress.of("bluetooth", cleanMac, 1),
-                connId
-            )
-            connectivityRegistry.registerPath(remotePeerId, path)
+            presenceBridge.handlePeerConnected(remotePeerId, connId)
+            try {
+                sendJoin(remotePeerId, connId)
+            } catch (e: Exception) {
+                logger.fine("Bluetooth sendJoin notice: ${e.message}")
+            }
         }
         return connId
     }
 
     fun sendJoin(remotePeerId: PeerId, connectionId: String) {
-        registry.register(remotePeerId, connectionId)
-        presenceBridge.handlePeerConnected(remotePeerId, connectionId)
+        val cleanConn = cleanConnId(connectionId)
+        registry.register(remotePeerId, cleanConn)
+        presenceBridge.handlePeerConnected(remotePeerId, cleanConn)
         val joinMsg = Message(
             MessageType.JOIN, localPeerId.value(),
             "join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
         )
-        compositeTransport.send(connectionId, FrameEncoder.encode(MessageEncoder.encode(joinMsg)))
+        compositeTransport.send(cleanConn, FrameEncoder.encode(MessageEncoder.encode(joinMsg)))
     }
 
     fun replyJoin(remotePeerId: PeerId) {
@@ -236,6 +225,24 @@ class PravahAndroidMessagingManager(
 
     fun addMessageListener(listener: ApplicationMessageListener) {
         messaging.addListener(listener)
+    }
+
+    private fun cleanConnId(connId: String): String {
+        return if (connId.startsWith("/")) connId.substring(1) else connId
+    }
+
+    private fun cleanOrphanedBtNode(authenticatedPeer: PeerId) {
+        val tempBtPeer = PeerId.of("remote-bt-node")
+        if (tempBtPeer != authenticatedPeer) {
+            connectivityRegistry.lookup(tempBtPeer).ifPresent { conn ->
+                for (path in conn.allPaths()) {
+                    if (path.isActive && path.connectionId() != null) {
+                        presenceBridge.handlePeerConnected(authenticatedPeer, path.connectionId())
+                    }
+                }
+                connectivityRegistry.removePeer(tempBtPeer)
+            }
+        }
     }
 
     override fun close() { stop() }
