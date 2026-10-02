@@ -1,5 +1,10 @@
-﻿package com.aryntra.pravah.android
+package com.aryntra.pravah.android
 
+import com.aryntra.pravah.android.bluetooth.AndroidBluetoothRfcommTransport
+import com.aryntra.pravah.connectivity.ConnectivityPath
+import com.aryntra.pravah.connectivity.EndpointAddress
+import com.aryntra.pravah.connectivity.PathId
+import com.aryntra.pravah.connectivity.PathSelectionPolicy
 import com.aryntra.pravah.connectivity.PeerConnectivityRegistry
 import com.aryntra.pravah.messaging.ApplicationMessage
 import com.aryntra.pravah.messaging.ApplicationMessageListener
@@ -24,43 +29,52 @@ import com.aryntra.pravah.protocol.MessageEncoder
 import com.aryntra.pravah.protocol.MessageType
 import com.aryntra.pravah.protocol.PeerState
 import com.aryntra.pravah.protocol.ProtocolListener
+import com.aryntra.pravah.transport.CompositeTransport
+import com.aryntra.pravah.transport.Transport
 import com.aryntra.pravah.transport.tcp.TcpTransport
 import java.util.Collections
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.logging.Logger
 
 /**
- * S7.4/S7.5 - Android Messaging + Discovery Integration Manager.
- * Transparently chains ProtocolListener to trigger reciprocal JOIN handshakes
- * without breaking DefaultApplicationMessagingService.
+ * S8.6 - Android Hybrid Messaging Manager.
+ * Orchestrates multi-path routing across TCP and Bluetooth RFCOMM via CompositeTransport.
  */
 class PravahAndroidMessagingManager(
     val localPeerId: PeerId,
     val host: String = "0.0.0.0",
     val port: Int = 0,
-    val discoveryPort: Int = 49152
+    val discoveryPort: Int = 49152,
+    val customTransport: Transport? = null,
+    val localMacAddress: String = "02:00:00:00:00:00"
 ) : AutoCloseable {
 
     private val logger = Logger.getLogger(PravahAndroidMessagingManager::class.java.name)
 
-    val transport = TcpTransport(host, port)
+    // Concrete underlying transports
+    val tcpTransport: TcpTransport = TcpTransport(host, port)
+    val bluetoothTransport: AndroidBluetoothRfcommTransport = AndroidBluetoothRfcommTransport(localMacAddress)
+
+    // Unified Composite Transport
+    val compositeTransport: Transport = customTransport ?: CompositeTransport(tcpTransport, bluetoothTransport)
+
     val registry = PeerRegistry()
     val presenceManager = PeerPresenceManager(2000L)
     val connectivityRegistry = PeerConnectivityRegistry()
     val presenceBridge = PeerPresenceBridge(registry, presenceManager, connectivityRegistry)
 
+    // Path selection policy: prefer high-bandwidth TCP over Bluetooth, with seamless failover
+    val pathPolicy: PathSelectionPolicy = PathSelectionPolicy.preferSchemes("tcp", "bluetooth", "bt")
+
     // Override setProtocolListener to chain listeners and auto-reply initial JOINs
-    val coordinator = object : PeerConnectionCoordinator(transport, registry, presenceBridge) {
+    val coordinator = object : PeerConnectionCoordinator(compositeTransport, registry, presenceBridge) {
         private var downstreamListener: ProtocolListener? = null
 
         override fun setProtocolListener(listener: ProtocolListener?) {
             this.downstreamListener = listener
             super.setProtocolListener(object : ProtocolListener {
                 override fun onPeerJoined(peerIdStr: String, message: Message) {
-                    // 1. Forward to DefaultApplicationMessagingService
                     downstreamListener?.onPeerJoined(peerIdStr, message)
-
-                    // 2. Perform reciprocal JOIN if initial inbound JOIN
                     if (message != null && message.messageId().startsWith("join-")) {
                         try {
                             val remotePeer = PeerId.of(peerIdStr)
@@ -83,7 +97,7 @@ class PravahAndroidMessagingManager(
         }
     }
 
-    val router = PeerRouter(registry, transport, connectivityRegistry)
+    val router = PeerRouter(registry, compositeTransport, connectivityRegistry, pathPolicy)
     val historyStore: MessageHistoryStore = InMemoryMessageHistoryStore()
     val outbox: DeliveryOutbox = InMemoryDeliveryOutbox()
     val messaging = DefaultApplicationMessagingService(
@@ -93,21 +107,20 @@ class PravahAndroidMessagingManager(
     private var discoveryEngine: LanPeerDiscovery? = null
     private val _discoveredPeers = CopyOnWriteArrayList<DiscoveredPeer>()
     val discoveredPeers: List<DiscoveredPeer> get() = Collections.unmodifiableList(_discoveredPeers)
-
     private var discoveryListener: ((DiscoveredPeer) -> Unit)? = null
 
-    val boundPort: Int get() = transport.boundPort
-    val isRunning: Boolean get() = transport.isRunning
+    val boundPort: Int get() = tcpTransport.boundPort
+    val isRunning: Boolean get() = compositeTransport.isRunning
 
     fun start() {
-        transport.start()
+        compositeTransport.start()
         presenceManager.start()
     }
 
     fun stop() {
         stopDiscovery()
         presenceManager.stop()
-        transport.stop()
+        compositeTransport.stop()
     }
 
     @Synchronized
@@ -141,8 +154,50 @@ class PravahAndroidMessagingManager(
         discoveryListener = listener
     }
 
+    /**
+     * Connects via TCP and registers path in ConnectivityRegistry.
+     */
+    fun connectToTcp(remoteHost: String, remotePort: Int, remotePeerId: PeerId? = null): String {
+        tcpTransport.connect(remoteHost, remotePort)
+        val connId = "$remoteHost:$remotePort"
+        if (remotePeerId != null) {
+            val path = ConnectivityPath.active(
+                PathId.of("path-tcp-$connId"),
+                remotePeerId,
+                "tcp",
+                EndpointAddress.tcp(remoteHost, remotePort),
+                connId
+            )
+            connectivityRegistry.registerPath(remotePeerId, path)
+        }
+        return connId
+    }
+
+    /**
+     * Backward-compatible alias for connectToTcp.
+     */
     fun connectTo(remoteHost: String, remotePort: Int) {
-        transport.connect(remoteHost, remotePort)
+        connectToTcp(remoteHost, remotePort)
+    }
+
+    /**
+     * Connects via Bluetooth RFCOMM and registers path in ConnectivityRegistry.
+     */
+    fun connectToBluetooth(remoteMac: String, remotePeerId: PeerId? = null): String {
+        bluetoothTransport.connect(remoteMac)
+        val cleanMac = remoteMac.removePrefix("bt:").trim().uppercase()
+        val connId = "bt:$cleanMac"
+        if (remotePeerId != null) {
+            val path = ConnectivityPath.active(
+                PathId.of("path-bt-$cleanMac"),
+                remotePeerId,
+                "bluetooth",
+                EndpointAddress.of("bluetooth", cleanMac, 1),
+                connId
+            )
+            connectivityRegistry.registerPath(remotePeerId, path)
+        }
+        return connId
     }
 
     fun sendJoin(remotePeerId: PeerId, connectionId: String) {
@@ -152,7 +207,7 @@ class PravahAndroidMessagingManager(
             MessageType.JOIN, localPeerId.value(),
             "join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
         )
-        transport.send(connectionId, FrameEncoder.encode(MessageEncoder.encode(joinMsg)))
+        compositeTransport.send(connectionId, FrameEncoder.encode(MessageEncoder.encode(joinMsg)))
     }
 
     fun replyJoin(remotePeerId: PeerId) {
