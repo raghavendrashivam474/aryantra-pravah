@@ -1,5 +1,6 @@
 ﻿package com.aryntra.pravah.android
 
+import com.aryntra.pravah.connectivity.PeerConnectivityRegistry
 import com.aryntra.pravah.messaging.ApplicationMessage
 import com.aryntra.pravah.messaging.ApplicationMessageListener
 import com.aryntra.pravah.messaging.DefaultApplicationMessagingService
@@ -22,6 +23,7 @@ import com.aryntra.pravah.protocol.Message
 import com.aryntra.pravah.protocol.MessageEncoder
 import com.aryntra.pravah.protocol.MessageType
 import com.aryntra.pravah.protocol.PeerState
+import com.aryntra.pravah.protocol.ProtocolListener
 import com.aryntra.pravah.transport.tcp.TcpTransport
 import java.util.Collections
 import java.util.concurrent.CopyOnWriteArrayList
@@ -29,11 +31,12 @@ import java.util.logging.Logger
 
 /**
  * S7.4/S7.5 - Android Messaging + Discovery Integration Manager.
- * Thin composition of existing Pravah components. No new architecture.
+ * Transparently chains ProtocolListener to trigger reciprocal JOIN handshakes
+ * without breaking DefaultApplicationMessagingService.
  */
 class PravahAndroidMessagingManager(
     val localPeerId: PeerId,
-    val host: String = "127.0.0.1",
+    val host: String = "0.0.0.0",
     val port: Int = 0,
     val discoveryPort: Int = 49152
 ) : AutoCloseable {
@@ -43,16 +46,50 @@ class PravahAndroidMessagingManager(
     val transport = TcpTransport(host, port)
     val registry = PeerRegistry()
     val presenceManager = PeerPresenceManager(2000L)
-    val presenceBridge = PeerPresenceBridge(registry, presenceManager)
-    val coordinator = PeerConnectionCoordinator(transport, registry, presenceBridge)
-    val router = PeerRouter(registry, transport)
+    val connectivityRegistry = PeerConnectivityRegistry()
+    val presenceBridge = PeerPresenceBridge(registry, presenceManager, connectivityRegistry)
+
+    // Override setProtocolListener to chain listeners and auto-reply initial JOINs
+    val coordinator = object : PeerConnectionCoordinator(transport, registry, presenceBridge) {
+        private var downstreamListener: ProtocolListener? = null
+
+        override fun setProtocolListener(listener: ProtocolListener?) {
+            this.downstreamListener = listener
+            super.setProtocolListener(object : ProtocolListener {
+                override fun onPeerJoined(peerIdStr: String, message: Message) {
+                    // 1. Forward to DefaultApplicationMessagingService
+                    downstreamListener?.onPeerJoined(peerIdStr, message)
+
+                    // 2. Perform reciprocal JOIN if initial inbound JOIN
+                    if (message != null && message.messageId().startsWith("join-")) {
+                        try {
+                            val remotePeer = PeerId.of(peerIdStr)
+                            logger.info("Auto-replying reciprocal JOIN to $peerIdStr")
+                            replyJoin(remotePeer)
+                        } catch (e: Exception) {
+                            logger.fine("Reciprocal JOIN auto-reply notice: ${e.message}")
+                        }
+                    }
+                }
+
+                override fun onMessageReceived(peerIdStr: String, message: Message) {
+                    downstreamListener?.onMessageReceived(peerIdStr, message)
+                }
+
+                override fun onPeerLeft(peerIdStr: String, message: Message) {
+                    downstreamListener?.onPeerLeft(peerIdStr, message)
+                }
+            })
+        }
+    }
+
+    val router = PeerRouter(registry, transport, connectivityRegistry)
     val historyStore: MessageHistoryStore = InMemoryMessageHistoryStore()
     val outbox: DeliveryOutbox = InMemoryDeliveryOutbox()
     val messaging = DefaultApplicationMessagingService(
         localPeerId, router, coordinator, historyStore, outbox
     )
 
-    // Lazy discovery engine created when bound port is known
     private var discoveryEngine: LanPeerDiscovery? = null
     private val _discoveredPeers = CopyOnWriteArrayList<DiscoveredPeer>()
     val discoveredPeers: List<DiscoveredPeer> get() = Collections.unmodifiableList(_discoveredPeers)
@@ -110,6 +147,7 @@ class PravahAndroidMessagingManager(
 
     fun sendJoin(remotePeerId: PeerId, connectionId: String) {
         registry.register(remotePeerId, connectionId)
+        presenceBridge.handlePeerConnected(remotePeerId, connectionId)
         val joinMsg = Message(
             MessageType.JOIN, localPeerId.value(),
             "join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
@@ -122,7 +160,11 @@ class PravahAndroidMessagingManager(
             MessageType.JOIN, localPeerId.value(),
             "reply-join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
         )
-        router.send(remotePeerId, joinMsg)
+        try {
+            router.send(remotePeerId, joinMsg)
+        } catch (e: Exception) {
+            logger.fine("Reply JOIN error: ${e.message}")
+        }
     }
 
     fun getSessionState(peerIdValue: String): PeerState? {

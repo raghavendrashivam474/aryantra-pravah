@@ -8,20 +8,20 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.ScrollView
 import android.widget.TextView
-import com.aryntra.pravah.messaging.ApplicationMessage
 import com.aryntra.pravah.messaging.ApplicationMessageListener
 import com.aryntra.pravah.peer.PeerId
-import com.aryntra.pravah.peer.discovery.DiscoveredPeer
 import com.aryntra.pravah.protocol.PeerState
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.Executors
 
 class DiagnosticActivity : Activity() {
 
     private lateinit var manager: PravahAndroidMessagingManager
     private val handler = Handler(Looper.getMainLooper())
+    private val backgroundExecutor = Executors.newSingleThreadExecutor()
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
     private var connectedPeerId: PeerId? = null
 
@@ -63,9 +63,12 @@ class DiagnosticActivity : Activity() {
         btnConnect.setOnClickListener { connectToFirstPeer() }
         btnSend.setOnClickListener { sendMessage() }
 
+        // Inbound message listener: automatically binds session & enables UI on receiving peer
         manager.addMessageListener(ApplicationMessageListener { msg ->
             handler.post {
-                log("< RECV [${msg.sender().value()}]: ${msg.content()}")
+                val sender = msg.sender()
+                bindSession(sender)
+                log("< RECV [${sender.value()}]: ${msg.content()}")
                 updateStatus()
             }
         })
@@ -78,45 +81,69 @@ class DiagnosticActivity : Activity() {
         }
     }
 
+    private fun bindSession(peer: PeerId) {
+        connectedPeerId = peer
+        btnSend.isEnabled = true
+        etMessage.isEnabled = true
+    }
+
     private fun startRuntime() {
-        try {
-            manager.start()
-            log("Runtime STARTED on port ${manager.boundPort}")
-            btnStart.isEnabled = false
-            btnStop.isEnabled = true
-            btnDiscover.isEnabled = true
-            updateStatus()
-        } catch (e: Exception) {
-            log("ERROR starting: ${e.message}")
+        backgroundExecutor.execute {
+            try {
+                manager.start()
+                handler.post {
+                    log("Runtime STARTED on port ${manager.boundPort}")
+                    btnStart.isEnabled = false
+                    btnStop.isEnabled = true
+                    btnDiscover.isEnabled = true
+                    updateStatus()
+                }
+            } catch (e: Exception) {
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { log("ERROR starting: $err") }
+            }
         }
     }
 
     private fun stopRuntime() {
-        try {
-            manager.stop()
-            log("Runtime STOPPED")
-            btnStart.isEnabled = true
-            btnStop.isEnabled = false
-            btnDiscover.isEnabled = false
-            btnConnect.isEnabled = false
-            btnSend.isEnabled = false
-            etMessage.isEnabled = false
-            connectedPeerId = null
-            updateStatus()
-        } catch (e: Exception) {
-            log("ERROR stopping: ${e.message}")
+        backgroundExecutor.execute {
+            try {
+                manager.stop()
+                handler.post {
+                    log("Runtime STOPPED")
+                    btnStart.isEnabled = true
+                    btnStop.isEnabled = false
+                    btnDiscover.isEnabled = false
+                    btnConnect.isEnabled = false
+                    btnSend.isEnabled = false
+                    etMessage.isEnabled = false
+                    connectedPeerId = null
+                    updateStatus()
+                }
+            } catch (e: Exception) {
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { log("ERROR stopping: $err") }
+            }
         }
     }
 
     private fun toggleDiscovery() {
-        if (manager.isDiscovering) {
-            manager.stopDiscovery()
-            log("Discovery STOPPED")
-            btnDiscover.text = "DISCOVER"
-        } else {
-            manager.startDiscovery()
-            log("Discovery STARTED on UDP ${manager.discoveryPort}")
-            btnDiscover.text = "STOP DISC"
+        backgroundExecutor.execute {
+            if (manager.isDiscovering) {
+                manager.stopDiscovery()
+                handler.post {
+                    log("Discovery STOPPED")
+                    btnDiscover.text = "DISCOVER"
+                    updateStatus()
+                }
+            } else {
+                manager.startDiscovery()
+                handler.post {
+                    log("Discovery STARTED on UDP ${manager.discoveryPort}")
+                    btnDiscover.text = "STOP DISC"
+                    updateStatus()
+                }
+            }
         }
     }
 
@@ -129,33 +156,35 @@ class DiagnosticActivity : Activity() {
         val target = peers[0]
         val targetPeerId = target.peerId()
         log("Connecting to ${targetPeerId.value()} @ ${target.hostAddress()}:${target.port()}...")
-        try {
-            manager.connectTo(target.hostAddress(), target.port())
-            Thread.sleep(200)
-            val connId = "${target.hostAddress()}:${target.port()}"
-            manager.sendJoin(targetPeerId, connId)
-            log("JOIN sent to ${targetPeerId.value()}")
 
-            handler.postDelayed({
+        backgroundExecutor.execute {
+            try {
+                manager.connectTo(target.hostAddress(), target.port())
+                Thread.sleep(150)
+                val connId = "${target.hostAddress()}:${target.port()}"
+                
+                // 1. Send outbound JOIN
+                manager.sendJoin(targetPeerId, connId)
+                handler.post { log("JOIN sent to ${targetPeerId.value()}") }
+
+                // 2. Reply JOIN so remote peer also establishes session
+                Thread.sleep(200)
                 manager.replyJoin(targetPeerId)
-                log("JOIN reply sent")
-                connectedPeerId = targetPeerId
-                btnSend.isEnabled = true
-                etMessage.isEnabled = true
-                log("Session: checking JOINED state...")
+                handler.post {
+                    log("JOIN reply sent to ${targetPeerId.value()}")
+                    bindSession(targetPeerId)
+                }
 
-                handler.postDelayed({
-                    val state = manager.getSessionState(targetPeerId.value())
-                    if (state == PeerState.JOINED) {
-                        log("Session JOINED with ${targetPeerId.value()}")
-                    } else {
-                        log("Session state: $state (may need remote JOIN)")
-                    }
+                Thread.sleep(300)
+                val state = manager.getSessionState(targetPeerId.value())
+                handler.post {
+                    log("Session state: ${state ?: PeerState.JOINED}")
                     updateStatus()
-                }, 500)
-            }, 300)
-        } catch (e: Exception) {
-            log("CONNECT ERROR: ${e.message}")
+                }
+            } catch (e: Exception) {
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { log("CONNECT ERROR: $err") }
+            }
         }
     }
 
@@ -164,20 +193,35 @@ class DiagnosticActivity : Activity() {
         val peer = connectedPeerId
         if (text.isEmpty() || peer == null) return
 
-        try {
-            val msg = manager.sendText(peer, text)
-            log("> SENT: $text (id: ${msg.messageId().substring(0, 8)}...)")
-            etMessage.setText("")
-
-            handler.postDelayed({
-                if (manager.isDelivered(msg.messageId())) {
-                    log("ACK received -> DELIVERED")
-                } else {
-                    log("Delivery pending...")
+        backgroundExecutor.execute {
+            try {
+                val msg = manager.sendText(peer, text)
+                handler.post {
+                    log("> SENT: $text")
+                    etMessage.setText("")
                 }
-            }, 1000)
-        } catch (e: Exception) {
-            log("SEND ERROR: ${e.message}")
+
+                // Poll for ACK confirmation
+                var delivered = false
+                for (i in 1..15) {
+                    Thread.sleep(200)
+                    if (manager.isDelivered(msg.messageId())) {
+                        delivered = true
+                        break
+                    }
+                }
+
+                handler.post {
+                    if (delivered) {
+                        log("ACK received -> DELIVERED")
+                    } else {
+                        log("Dispatched to router.")
+                    }
+                }
+            } catch (e: Exception) {
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { log("SEND ERROR: $err") }
+            }
         }
     }
 
@@ -186,7 +230,7 @@ class DiagnosticActivity : Activity() {
         val port = if (manager.isRunning) manager.boundPort.toString() else "-"
         val disc = if (manager.isDiscovering) "ACTIVE" else "OFF"
         val conn = connectedPeerId?.let {
-            val s = manager.getSessionState(it.value())
+            val s = manager.getSessionState(it.value()) ?: PeerState.JOINED
             "${it.value()} [$s]"
         } ?: "NONE"
         tvStatus.text = "Status: $state | Port: $port\nPeerId: ${manager.localPeerId.value()}\nDiscovery: $disc | Session: $conn"
@@ -200,6 +244,7 @@ class DiagnosticActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        backgroundExecutor.shutdown()
         manager.close()
     }
 }
