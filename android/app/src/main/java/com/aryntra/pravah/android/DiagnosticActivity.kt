@@ -1,7 +1,11 @@
 package com.aryntra.pravah.android
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.AlertDialog
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -13,9 +17,6 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.aryntra.pravah.connectivity.ConnectivityPath
-import com.aryntra.pravah.connectivity.EndpointAddress
-import com.aryntra.pravah.connectivity.PathId
 import com.aryntra.pravah.messaging.ApplicationMessageListener
 import com.aryntra.pravah.peer.PeerId
 import com.aryntra.pravah.protocol.PeerState
@@ -33,8 +34,6 @@ class DiagnosticActivity : Activity() {
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private var connectedPeerId: PeerId? = null
-    private var lastDiscoveredHost: String? = null
-    private var lastDiscoveredPort: Int = 0
 
     private lateinit var tvStatus: TextView
     private lateinit var tvMultiPathTopology: TextView
@@ -81,7 +80,7 @@ class DiagnosticActivity : Activity() {
         btnStop.setOnClickListener { stopRuntime() }
         btnDiscover.setOnClickListener { toggleDiscovery() }
         btnConnectTcp.setOnClickListener { connectTcp() }
-        btnConnectBt.setOnClickListener { connectBt() }
+        btnConnectBt.setOnClickListener { showBluetoothDeviceChooser() }
         btnSimulateDrop.setOnClickListener { simulateTcpDrop() }
         btnSend.setOnClickListener { sendMessage() }
 
@@ -96,8 +95,7 @@ class DiagnosticActivity : Activity() {
 
         manager.setDiscoveryListener { peer ->
             handler.post {
-                lastDiscoveredHost = peer.hostAddress()
-                lastDiscoveredPort = peer.port()
+                bindSession(peer.peerId())
                 log("DISCOVERED: ${peer.peerId().value()} @ ${peer.hostAddress()}:${peer.port()}")
                 btnConnectTcp.isEnabled = true
                 btnConnectBt.isEnabled = true
@@ -133,6 +131,8 @@ class DiagnosticActivity : Activity() {
         btnSend.isEnabled = true
         etMessage.isEnabled = true
         btnSimulateDrop.isEnabled = true
+        btnConnectTcp.isEnabled = true
+        btnConnectBt.isEnabled = true
     }
 
     private fun startRuntime() {
@@ -144,6 +144,7 @@ class DiagnosticActivity : Activity() {
                     btnStart.isEnabled = false
                     btnStop.isEnabled = true
                     btnDiscover.isEnabled = true
+                    btnConnectBt.isEnabled = true
                     updateDashboard()
                 }
             } catch (e: Exception) {
@@ -199,9 +200,15 @@ class DiagnosticActivity : Activity() {
 
     private fun connectTcp() {
         val peers = manager.discoveredPeers
-        val host = lastDiscoveredHost ?: if (peers.isNotEmpty()) peers[0].hostAddress() else "127.0.0.1"
-        val port = if (lastDiscoveredPort > 0) lastDiscoveredPort else if (peers.isNotEmpty()) peers[0].port() else 8080
-        val targetPeerId = if (peers.isNotEmpty()) peers[0].peerId() else PeerId.of("remote-node")
+        if (peers.isEmpty()) {
+            log("No peers discovered yet via UDP. Please press DISCOVER first.")
+            return
+        }
+
+        val target = peers.last()
+        val host = target.hostAddress()
+        val port = target.port()
+        val targetPeerId = target.peerId()
 
         log("Connecting TCP to ${targetPeerId.value()} @ $host:$port...")
         backgroundExecutor.execute {
@@ -223,13 +230,42 @@ class DiagnosticActivity : Activity() {
         }
     }
 
-    private fun connectBt() {
-        val targetPeerId = connectedPeerId ?: PeerId.of("remote-bt-node")
-        val sampleMac = "02:00:00:00:00:01"
-        log("Registering & Connecting Bluetooth RFCOMM path for ${targetPeerId.value()}...")
+    @SuppressLint("MissingPermission")
+    private fun showBluetoothDeviceChooser() {
+        val adapter = try { BluetoothAdapter.getDefaultAdapter() } catch (t: Throwable) { null }
+        if (adapter == null || !adapter.isEnabled) {
+            log("Bluetooth is turned OFF or unavailable on this device")
+            return
+        }
+
+        val bondedDevices: Set<BluetoothDevice> = try { adapter.bondedDevices ?: emptySet() } catch (e: Exception) { emptySet() }
+        val deviceList = bondedDevices.toList()
+
+        if (deviceList.isEmpty()) {
+            log("No paired Bluetooth devices found. Please pair both Android devices in Bluetooth Settings first.")
+            return
+        }
+
+        val names = deviceList.map { "${it.name ?: "Unknown"} (${it.address})" }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("Select Paired Bluetooth Peer")
+            .setItems(names) { _, which ->
+                val selectedDevice = deviceList[which]
+                connectBtDevice(selectedDevice.address)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun connectBtDevice(macAddress: String) {
+        val peers = manager.discoveredPeers
+        val targetPeerId = connectedPeerId ?: if (peers.isNotEmpty()) peers.last().peerId() else PeerId.of("remote-bt-node")
+
+        log("Connecting Bluetooth RFCOMM to $macAddress for ${targetPeerId.value()}...")
         backgroundExecutor.execute {
             try {
-                val connId = manager.connectToBluetooth(sampleMac, targetPeerId)
+                val connId = manager.connectToBluetooth(macAddress, targetPeerId)
                 handler.post {
                     log("Bluetooth path established: $connId")
                     bindSession(targetPeerId)
@@ -237,7 +273,7 @@ class DiagnosticActivity : Activity() {
                 }
             } catch (e: Exception) {
                 val err = e.message ?: e.javaClass.simpleName
-                handler.post { log("BT CONNECT NOTICE: $err (Registered in Multi-Path Registry)") }
+                handler.post { log("BT CONNECT NOTICE: $err") }
             }
         }
     }
@@ -309,27 +345,40 @@ class DiagnosticActivity : Activity() {
         tvStatus.text = "Status: $state | TCP Port: $port\nPeerId: ${manager.localPeerId.value()}\nDiscovery: $disc | Remote: $peerStr [$sessionStr]"
 
         val topoSb = StringBuilder()
-        val target = connectedPeerId
-        if (target != null) {
-            topoSb.append("Peer: ").append(target.value()).append("\n")
-            val connOpt = manager.connectivityRegistry.lookup(target)
-            if (connOpt.isPresent) {
-                val conn = connOpt.get()
-                for (path in conn.allPaths()) {
-                    val statusSymbol = if (path.isActive) "● ACTIVE" else "○ INACTIVE"
-                    topoSb.append(" ├── [").append(path.transportName().uppercase()).append("] ")
-                        .append(path.pathId().value()).append(" -> ")
-                        .append(statusSymbol).append(" (").append(path.optionalConnectionId().orElse("no-conn")).append(")\n")
+        val allConnectivities = manager.connectivityRegistry.allConnectivities()
+            .filter { it.peerId().value() != "remote-bt-node" || manager.connectivityRegistry.allConnectivities().size == 1 }
+
+        if (allConnectivities.isNotEmpty()) {
+            for (conn in allConnectivities) {
+                topoSb.append("Peer: ").append(conn.peerId().value()).append("\n")
+
+                // Group and deduplicate paths by scheme (one Bluetooth, one TCP)
+                val tcpPath = conn.allPaths().firstOrNull { it.transportName().equals("tcp", ignoreCase = true) }
+                val btPath = conn.allPaths().firstOrNull { it.transportName().contains("bt", ignoreCase = true) || it.transportName().contains("bluetooth", ignoreCase = true) }
+
+                if (btPath != null) {
+                    val statusSymbol = if (btPath.isActive) "● ACTIVE" else "○ INACTIVE"
+                    val cleanConn = btPath.optionalConnectionId().map { if (it.startsWith("/")) it.substring(1) else it }.orElse("no-conn")
+                    topoSb.append(" ├── [BLUETOOTH] ")
+                        .append(statusSymbol).append(" (").append(cleanConn).append(")\n")
                 }
-                val selected = try { manager.router.resolveConnectionId(target) } catch (e: Exception) { "none" }
-                topoSb.append(" └── [DISPATCH ROUTE]: ").append(selected)
-            } else {
-                topoSb.append(" └── Direct Socket fallback")
+
+                if (tcpPath != null) {
+                    val statusSymbol = if (tcpPath.isActive) "● ACTIVE" else "○ INACTIVE"
+                    val rawConn = tcpPath.optionalConnectionId().orElse("no-conn")
+                    val cleanConn = if (rawConn.startsWith("bt:")) "no-conn" else (if (rawConn.startsWith("/")) rawConn.substring(1) else rawConn)
+                    topoSb.append(" ├── [TCP] ")
+                        .append(statusSymbol).append(" (").append(cleanConn).append(")\n")
+                }
+
+                val selected = try { manager.router.resolveConnectionId(conn.peerId()) } catch (e: Exception) { "none" }
+                val cleanSelected = if (selected.startsWith("/")) selected.substring(1) else selected
+                topoSb.append(" └── [DISPATCH ROUTE]: ").append(cleanSelected).append("\n\n")
             }
         } else {
             topoSb.append("No active peer paths.")
         }
-        tvMultiPathTopology.text = topoSb.toString()
+        tvMultiPathTopology.text = topoSb.toString().trim()
     }
 
     private fun log(msg: String) {
