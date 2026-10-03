@@ -37,6 +37,8 @@ These questions represent systemic challenges identified during our code discove
 ## 2. Security X Sprint Roadmap (Section 4 & 5)
 
 To prevent scope creep, work is strictly partitioned across the following sequence.
+
+```text
 SX.1 (This Sprint) ──► Threat Model & Principles (Zero Code)
 │
 ├──► SX.2: Cryptographic Identity (PeerId ↔ Key Binding)
@@ -54,9 +56,7 @@ SX.1 (This Sprint) ──► Threat Model & Principles (Zero Code)
 ├──► SX.8: Traffic Fabric (Multi-path experimental obfuscation)
 │
 └──► SX.9: Security Regression & Verification
-
-text
-
+```
 
 ### SX.2 — Cryptographic Identity
 *   **Focus:** Bind `PeerId` to cryptographic primitives.
