@@ -139,9 +139,28 @@ public class PeerConnectionCoordinator implements TransportListener {
         PeerId peerId = connectionToPeer.remove(connectionId);
         if (peerId != null) {
             peerToConnection.remove(peerId, connectionId);
-            presenceBridge.handlePeerDisconnected(peerId);
-            sessionManager.resetPeer(peerId.value());
-            LOGGER.info(() -> "Peer disconnected and unregistered: " + peerId.value());
+
+            // Re-point primary connection mapping if other active connections remain for this peer
+            boolean hasOtherConnections = connectionToPeer.containsValue(peerId);
+            if (hasOtherConnections) {
+                for (var entry : connectionToPeer.entrySet()) {
+                    if (entry.getValue().equals(peerId)) {
+                        peerToConnection.put(peerId, entry.getKey());
+                        break;
+                    }
+                }
+            }
+
+            // Surgically close only this specific path in the presence bridge
+            presenceBridge.handleConnectionClosed(peerId, connectionId);
+
+            // Reset protocol session only if no active connections remain
+            if (!hasOtherConnections) {
+                sessionManager.resetPeer(peerId.value());
+                LOGGER.info(() -> "Peer disconnected and unregistered: " + peerId.value());
+            } else {
+                LOGGER.info(() -> "Closed path " + connectionId + " for peer " + peerId.value() + " (other paths remain active)");
+            }
         }
     }
 
@@ -156,10 +175,14 @@ public class PeerConnectionCoordinator implements TransportListener {
             // Notify Presence Bridge FIRST (promotes to CONNECTED & updates PeerRegistry)
             presenceBridge.handlePeerConnected(peerId, connectionId);
 
-            // Then process protocol state transition (which notifies downstream listeners)
-            sessionManager.processMessage(message);
-
-            LOGGER.info(() -> "Peer successfully authenticated and connected: " + peerId.value());
+            // If peer is not yet joined in session manager, process JOIN; if already joined,
+            // multi-path attachment succeeds idempotently
+            if (!sessionManager.isPeerJoined(peerId.value())) {
+                sessionManager.processMessage(message);
+                LOGGER.info(() -> "Peer successfully authenticated and connected: " + peerId.value());
+            } else {
+                LOGGER.info(() -> "Secondary path authenticated for existing peer session: " + peerId.value() + " via " + connectionId);
+            }
         } else if (message.type() == MessageType.LEAVE) {
             PeerId peerId = PeerId.of(message.senderId());
 
@@ -168,7 +191,7 @@ public class PeerConnectionCoordinator implements TransportListener {
             peerToConnection.remove(peerId, connectionId);
             presenceBridge.handlePeerDisconnected(peerId);
 
-            // Then process protocol state transition (which notifies downstream listeners)
+            // Process protocol state transition
             sessionManager.processMessage(message);
 
             LOGGER.info(() -> "Peer successfully left session: " + peerId.value());
