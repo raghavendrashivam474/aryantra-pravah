@@ -1,4 +1,4 @@
-package com.aryntra.pravah.android
+﻿package com.aryntra.pravah.android
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -17,36 +17,36 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.aryntra.pravah.android.presentation.*
+import com.aryntra.pravah.android.state.DiagnosticModelMapper
 import com.aryntra.pravah.messaging.ApplicationMessageListener
 import com.aryntra.pravah.peer.PeerId
-import com.aryntra.pravah.protocol.PeerState
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.Executors
 
+/**
+ * Modernized Diagnostic UI Entry Point (§2, §28).
+ * Retains 100% of validated network core interactions while delegating rendering 
+ * to decoupled presentation panels and clean mapping states.
+ */
 class DiagnosticActivity : Activity() {
 
     private lateinit var manager: PravahAndroidMessagingManager
     private val handler = Handler(Looper.getMainLooper())
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
-    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     private var connectedPeerId: PeerId? = null
 
-    private lateinit var tvStatus: TextView
+    // Component Panels (§14)
+    private lateinit var nodeStatusPanel: NodeStatusPanel
+    private lateinit var networkSnapshotPanel: NetworkSnapshotPanel
+    private lateinit var peerPanel: PeerPanel
+    private lateinit var pathPanel: PathPanel
+    private lateinit var liveWirePanel: LiveWirePanel
+    private lateinit var operationsPanel: OperationsPanel
+
     private lateinit var tvMultiPathTopology: TextView
-    private lateinit var tvLog: TextView
-    private lateinit var scrollLog: ScrollView
     private lateinit var etMessage: EditText
-    private lateinit var btnStart: Button
-    private lateinit var btnStop: Button
-    private lateinit var btnDiscover: Button
-    private lateinit var btnConnectTcp: Button
-    private lateinit var btnConnectBt: Button
-    private lateinit var btnSimulateDrop: Button
-    private lateinit var btnSend: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,20 +54,33 @@ class DiagnosticActivity : Activity() {
 
         requestPermissionsIfRequired()
 
-        tvStatus = findViewById(R.id.tvStatus)
+        // 1. Core UI Elements Extraction
+        val tvStatus: TextView = findViewById(R.id.tvStatus)
         tvMultiPathTopology = findViewById(R.id.tvMultiPathTopology)
-        tvLog = findViewById(R.id.tvLog)
-        scrollLog = findViewById(R.id.scrollLog)
+        val tvLog: TextView = findViewById(R.id.tvLog)
+        val scrollLog: ScrollView = findViewById(R.id.scrollLog)
         etMessage = findViewById(R.id.etMessage)
 
-        btnStart = findViewById(R.id.btnStart)
-        btnStop = findViewById(R.id.btnStop)
-        btnDiscover = findViewById(R.id.btnDiscover)
-        btnConnectTcp = findViewById(R.id.btnConnectTcp)
-        btnConnectBt = findViewById(R.id.btnConnectBt)
-        btnSimulateDrop = findViewById(R.id.btnSimulateDrop)
-        btnSend = findViewById(R.id.btnSend)
+        val btnStart: Button = findViewById(R.id.btnStart)
+        val btnStop: Button = findViewById(R.id.btnStop)
+        val btnDiscover: Button = findViewById(R.id.btnDiscover)
+        val btnConnectTcp: Button = findViewById(R.id.btnConnectTcp)
+        val btnConnectBt: Button = findViewById(R.id.btnConnectBt)
+        val btnSimulateDrop: Button = findViewById(R.id.btnSimulateDrop)
+        val btnSend: Button = findViewById(R.id.btnSend)
 
+        // 2. Initialize Components & Panels
+        nodeStatusPanel = NodeStatusPanel(tvStatus)
+        networkSnapshotPanel = NetworkSnapshotPanel()
+        peerPanel = PeerPanel()
+        pathPanel = PathPanel()
+        liveWirePanel = LiveWirePanel(scrollLog, tvLog)
+        operationsPanel = OperationsPanel(
+            btnStart, btnStop, btnDiscover, btnConnectTcp, 
+            btnConnectBt, btnSimulateDrop, etMessage, btnSend
+        )
+
+        // 3. Set up local Peer ID and runtime messaging context
         val shortId = UUID.randomUUID().toString().substring(0, 8)
         val peerId = PeerId.of("android-$shortId")
         manager = PravahAndroidMessagingManager(peerId)
@@ -76,6 +89,7 @@ class DiagnosticActivity : Activity() {
         log("PeerId: ${peerId.value()}")
         updateDashboard()
 
+        // 4. Operations click bindings
         btnStart.setOnClickListener { startRuntime() }
         btnStop.setOnClickListener { stopRuntime() }
         btnDiscover.setOnClickListener { toggleDiscovery() }
@@ -84,6 +98,7 @@ class DiagnosticActivity : Activity() {
         btnSimulateDrop.setOnClickListener { simulateTcpDrop() }
         btnSend.setOnClickListener { sendMessage() }
 
+        // 5. Setup unchanged messaging callbacks
         manager.addMessageListener(ApplicationMessageListener { msg ->
             handler.post {
                 val sender = msg.sender()
@@ -97,8 +112,6 @@ class DiagnosticActivity : Activity() {
             handler.post {
                 bindSession(peer.peerId())
                 log("DISCOVERED: ${peer.peerId().value()} @ ${peer.hostAddress()}:${peer.port()}")
-                btnConnectTcp.isEnabled = true
-                btnConnectBt.isEnabled = true
                 updateDashboard()
             }
         }
@@ -128,11 +141,7 @@ class DiagnosticActivity : Activity() {
 
     private fun bindSession(peer: PeerId) {
         connectedPeerId = peer
-        btnSend.isEnabled = true
-        etMessage.isEnabled = true
-        btnSimulateDrop.isEnabled = true
-        btnConnectTcp.isEnabled = true
-        btnConnectBt.isEnabled = true
+        updateDashboard()
     }
 
     private fun startRuntime() {
@@ -141,10 +150,6 @@ class DiagnosticActivity : Activity() {
                 manager.start()
                 handler.post {
                     log("Runtime STARTED on TCP port ${manager.boundPort}")
-                    btnStart.isEnabled = false
-                    btnStop.isEnabled = true
-                    btnDiscover.isEnabled = true
-                    btnConnectBt.isEnabled = true
                     updateDashboard()
                 }
             } catch (e: Exception) {
@@ -160,14 +165,6 @@ class DiagnosticActivity : Activity() {
                 manager.stop()
                 handler.post {
                     log("Runtime STOPPED")
-                    btnStart.isEnabled = true
-                    btnStop.isEnabled = false
-                    btnDiscover.isEnabled = false
-                    btnConnectTcp.isEnabled = false
-                    btnConnectBt.isEnabled = false
-                    btnSimulateDrop.isEnabled = false
-                    btnSend.isEnabled = false
-                    etMessage.isEnabled = false
                     connectedPeerId = null
                     updateDashboard()
                 }
@@ -184,14 +181,12 @@ class DiagnosticActivity : Activity() {
                 manager.stopDiscovery()
                 handler.post {
                     log("Discovery STOPPED")
-                    btnDiscover.text = "DISCOVER"
                     updateDashboard()
                 }
             } else {
                 manager.startDiscovery()
                 handler.post {
                     log("Discovery STARTED on UDP ${manager.discoveryPort}")
-                    btnDiscover.text = "STOP DISC"
                     updateDashboard()
                 }
             }
@@ -335,56 +330,51 @@ class DiagnosticActivity : Activity() {
         }
     }
 
+    /**
+     * Reorganized updateDashboard implementation (§7, §14, §15).
+     * Compiles manager state, requests standard mapping models, and delegates
+     * styling outputs across component panel domains.
+     */
     private fun updateDashboard() {
-        val state = if (manager.isRunning) "RUNNING" else "STOPPED"
-        val port = if (manager.isRunning) manager.boundPort.toString() else "-"
-        val disc = if (manager.isDiscovering) "ACTIVE" else "OFF"
-        val peerStr = connectedPeerId?.value() ?: "NONE"
-        val sessionStr = connectedPeerId?.let { manager.getSessionState(it.value()) ?: PeerState.JOINED } ?: "-"
+        // 1. Build immutable UI state from Core & Manager State
+        val uiState = DiagnosticModelMapper.map(manager, connectedPeerId)
 
-        tvStatus.text = "Status: $state | TCP Port: $port\nPeerId: ${manager.localPeerId.value()}\nDiscovery: $disc | Remote: $peerStr [$sessionStr]"
+        // 2. Render Node Status Section
+        nodeStatusPanel.render(uiState.nodeStatus)
 
+        // 3. Render Button/Interactive Control States
+        operationsPanel.render(uiState.operations)
+
+        // 4. Construct Multi-path topology representation dynamically
         val topoSb = StringBuilder()
-        val allConnectivities = manager.connectivityRegistry.allConnectivities()
-            .filter { it.peerId().value() != "remote-bt-node" || manager.connectivityRegistry.allConnectivities().size == 1 }
 
-        if (allConnectivities.isNotEmpty()) {
-            for (conn in allConnectivities) {
-                topoSb.append("Peer: ").append(conn.peerId().value()).append("\n")
+        // Network snapshot summary header (§9)
+        topoSb.append("--- NETWORK SNAPSHOT ---\n")
+        topoSb.append(networkSnapshotPanel.formatTelemetry(uiState.snapshot)).append("\n\n")
 
-                // Group and deduplicate paths by scheme (one Bluetooth, one TCP)
-                val tcpPath = conn.allPaths().firstOrNull { it.transportName().equals("tcp", ignoreCase = true) }
-                val btPath = conn.allPaths().firstOrNull { it.transportName().contains("bt", ignoreCase = true) || it.transportName().contains("bluetooth", ignoreCase = true) }
+        if (uiState.peers.isNotEmpty()) {
+            for (peer in uiState.peers) {
+                // Formatting peer details (§10)
+                topoSb.append(peerPanel.formatPeerHeader(peer))
 
-                if (btPath != null) {
-                    val statusSymbol = if (btPath.isActive) "● ACTIVE" else "○ INACTIVE"
-                    val cleanConn = btPath.optionalConnectionId().map { if (it.startsWith("/")) it.substring(1) else it }.orElse("no-conn")
-                    topoSb.append(" ├── [BLUETOOTH] ")
-                        .append(statusSymbol).append(" (").append(cleanConn).append(")\n")
+                // Group associated sub-paths (§11)
+                val associatedPaths = uiState.paths.filter { it.peerId == peer.peerId }
+                for (path in associatedPaths) {
+                    topoSb.append(pathPanel.formatPath(path))
                 }
 
-                if (tcpPath != null) {
-                    val statusSymbol = if (tcpPath.isActive) "● ACTIVE" else "○ INACTIVE"
-                    val rawConn = tcpPath.optionalConnectionId().orElse("no-conn")
-                    val cleanConn = if (rawConn.startsWith("bt:")) "no-conn" else (if (rawConn.startsWith("/")) rawConn.substring(1) else rawConn)
-                    topoSb.append(" ├── [TCP] ")
-                        .append(statusSymbol).append(" (").append(cleanConn).append(")\n")
-                }
-
-                val selected = try { manager.router.resolveConnectionId(conn.peerId()) } catch (e: Exception) { "none" }
-                val cleanSelected = if (selected.startsWith("/")) selected.substring(1) else selected
-                topoSb.append(" └── [DISPATCH ROUTE]: ").append(cleanSelected).append("\n\n")
+                // Dispatch line resolution
+                topoSb.append(pathPanel.formatDispatchRoute(peer.resolvedRoute))
             }
         } else {
             topoSb.append("No active peer paths.")
         }
+
         tvMultiPathTopology.text = topoSb.toString().trim()
     }
 
     private fun log(msg: String) {
-        val ts = timeFmt.format(Date())
-        tvLog.append("[$ts] $msg\n")
-        scrollLog.post { scrollLog.fullScroll(ScrollView.FOCUS_DOWN) }
+        liveWirePanel.log(msg)
     }
 
     override fun onDestroy() {
