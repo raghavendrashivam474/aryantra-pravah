@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -6,15 +6,45 @@
     android:padding="12dp"
     android:background="#12121e">
 
-    <TextView
+    <!-- Branded Product Header -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="PRAVAAH HYBRID DIAGNOSTIC NODE"
-        android:textColor="#00ff88"
-        android:textSize="16sp"
-        android:textStyle="bold"
-        android:gravity="center"
-        android:paddingBottom="4dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingBottom="8dp">
+
+        <ImageView
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:src="@drawable/ic_pravaah_logo"
+            android:contentDescription="Pravaah Logo"
+            android:layout_marginEnd="10dp" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PRAVAAH"
+                android:textColor="#00ff88"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.05" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="HYBRID MULTI-PATH DIAGNOSTIC NODE"
+                android:textColor="#8892b0"
+                android:textSize="9sp"
+                android:fontFamily="monospace" />
+        </LinearLayout>
+    </LinearLayout>
 
     <!-- Node Status Card -->
     <TextView
@@ -56,15 +86,32 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingTop="6dp">
-        <Button android:id="@+id/btnStart" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="START" android:textSize="11sp" />
-        <Button android:id="@+id/btnStop" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="STOP" android:textSize="11sp" android:enabled="false" />
-        <Button android:id="@+id/btnDiscover" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="DISCOVER" android:textSize="11sp" android:enabled="false" />
+
+        <Button
+            android:id="@+id/btnStart"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="START"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/btnStop"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="STOP"
+            android:textSize="11sp"
+            android:enabled="false" />
+
+        <Button
+            android:id="@+id/btnDiscover"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="DISCOVER"
+            android:textSize="11sp"
+            android:enabled="false" />
     </LinearLayout>
 
     <!-- Hybrid Connect & Failover Buttons -->
@@ -72,15 +119,33 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal">
-        <Button android:id="@+id/btnConnectTcp" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="CONNECT TCP" android:textSize="10sp" android:enabled="false" />
-        <Button android:id="@+id/btnConnectBt" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="CONNECT BT" android:textSize="10sp" android:enabled="false" />
-        <Button android:id="@+id/btnSimulateDrop" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="DROP TCP" android:textSize="10sp" android:enabled="false" />
+
+        <Button
+            android:id="@+id/btnConnectTcp"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="CONNECT TCP"
+            android:textSize="10sp"
+            android:enabled="false" />
+
+        <Button
+            android:id="@+id/btnConnectBt"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="CONNECT BT"
+            android:textSize="10sp"
+            android:enabled="false" />
+
+        <Button
+            android:id="@+id/btnSimulateDrop"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="DROP TCP"
+            android:textSize="10sp"
+            android:enabled="false" />
     </LinearLayout>
 
     <!-- Message Input & Send -->
@@ -89,14 +154,26 @@
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:paddingTop="4dp">
-        <EditText android:id="@+id/etMessage" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="3"
-            android:hint="Type payload message..." android:textColor="#ffffff"
-            android:textColorHint="#888888" android:textSize="12sp"
+
+        <EditText
+            android:id="@+id/etMessage"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="3"
+            android:hint="Type payload message..."
+            android:textColor="#ffffff"
+            android:textColorHint="#888888"
+            android:textSize="12sp"
             android:enabled="false" />
-        <Button android:id="@+id/btnSend" android:layout_width="0dp"
-            android:layout_height="wrap_content" android:layout_weight="1"
-            android:text="SEND" android:textSize="11sp" android:enabled="false" />
+
+        <Button
+            android:id="@+id/btnSend"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="SEND"
+            android:textSize="11sp"
+            android:enabled="false" />
     </LinearLayout>
 
     <!-- Event Logging Feed -->
@@ -115,6 +192,7 @@
         android:layout_weight="1"
         android:background="#090910"
         android:padding="6dp">
+
         <TextView
             android:id="@+id/tvLog"
             android:layout_width="match_parent"
