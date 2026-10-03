@@ -23,10 +23,6 @@ import java.util.logging.Logger;
  * <p>S6.4 & S8.3 Integration: When a reachability candidate is discovered via any transport,
  * an idempotent CANDIDATE ConnectivityPath is registered. Multiple distinct transport candidates
  * for the same PeerId will live side-by-side in the PeerConnectivity record.</p>
- *
- * S3.4 - S3.5 - Phase 3 Integration Bridge
- * S6.4 - Phase 6: Connectivity Integration
- * S8.3 - Phase 8: Hybrid Discovery & Addressing
  */
 public final class PeerPresenceBridge implements PeerDiscoveryListener {
     private static final Logger logger = Logger.getLogger(PeerPresenceBridge.class.getName());
@@ -35,27 +31,18 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
     private final PeerPresenceManager presenceManager;
     private final PeerConnectivityRegistry connectivityRegistry; // nullable for backward compat
 
-    /**
-     * Original Phase 3 constructor â€” no connectivity tracking.
-     */
     public PeerPresenceBridge(PeerRegistry registry, PeerPresenceManager presenceManager) {
         this(registry, presenceManager, null);
     }
 
-    /**
-     * S6.4 constructor â€” enables connectivity path lifecycle tracking.
-     */
     public PeerPresenceBridge(PeerRegistry registry,
                               PeerPresenceManager presenceManager,
                               PeerConnectivityRegistry connectivityRegistry) {
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
         this.presenceManager = Objects.requireNonNull(presenceManager, "presenceManager must not be null");
-        this.connectivityRegistry = connectivityRegistry; // intentionally nullable
+        this.connectivityRegistry = connectivityRegistry;
     }
 
-    /**
-     * Handle automated LAN discoveries (TCP IP endpoint).
-     */
     @Override
     public void onPeerDiscovered(DiscoveredPeer peer) {
         Objects.requireNonNull(peer, "peer must not be null");
@@ -65,10 +52,6 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
         onCandidateDiscovered(candidate);
     }
 
-    /**
-     * S8.3: Universal reachability candidate handler across heterogeneous transports.
-     * Idempotently creates a CANDIDATE path and registers peer presence without marking active.
-     */
     public void onCandidateDiscovered(DiscoveredAddressCandidate candidate) {
         Objects.requireNonNull(candidate, "candidate must not be null");
         PeerId peerId = candidate.peerId();
@@ -90,10 +73,6 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
         }
     }
 
-    /**
-     * Explicitly coordinate a successful connection session.
-     * Promotes matching candidate path to ACTIVE, or creates an active path.
-     */
     public void handlePeerConnected(PeerId peerId, String connectionId) {
         Objects.requireNonNull(peerId, "peerId must not be null");
         Objects.requireNonNull(connectionId, "connectionId must not be null");
@@ -111,28 +90,18 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
         }
     }
 
-    /**
-     * Explicitly coordinate a connection tear-down or drop event for all paths.
-     */
     public void handlePeerDisconnected(PeerId peerId) {
         Objects.requireNonNull(peerId, "peerId must not be null");
 
-        // 1. Downgrade/Update Registry to disconnected state
         registry.register(PeerRecord.disconnected(peerId));
-
-        // 2. Update Presence
         presenceManager.reportDisconnected(peerId);
         logger.fine("Presence Bridge: Peer " + peerId.value() + " marked disconnected.");
 
-        // 3. Deactivate all active connectivity paths
         if (connectivityRegistry != null) {
             deactivatePaths(peerId);
         }
     }
 
-    /**
-     * S8.3: Deactivate a specific path by connection ID without dropping other paths.
-     */
     public void handleConnectionClosed(PeerId peerId, String connectionId) {
         Objects.requireNonNull(peerId, "peerId must not be null");
         if (connectivityRegistry != null) {
@@ -156,28 +125,31 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
 
     private void activatePath(PeerId peerId, String connectionId) {
         PeerConnectivity connectivity = connectivityRegistry.getOrCreate(peerId);
-        List<ConnectivityPath> candidates = connectivity.candidatePaths();
-        
-        // Find matching candidate by connection scheme if possible
         String targetScheme = connectionId.startsWith("bt:") ? "bluetooth" : "tcp";
-        ConnectivityPath targetCandidate = candidates.stream()
-                .filter(c -> c.transportName().equalsIgnoreCase(targetScheme))
-                .findFirst()
-                .orElse(candidates.isEmpty() ? null : candidates.get(0));
 
-        if (targetCandidate != null) {
-            connectivity.addPath(targetCandidate.activate(connectionId));
-            logger.fine("Connectivity: Activated path " + targetCandidate.pathId()
-                    + " with connection " + connectionId);
+        // Check for existing candidate or inactive path matching this scheme or connection
+        ConnectivityPath targetPath = connectivity.allPaths().stream()
+                .filter(p -> !p.isActive() && (p.transportName().equalsIgnoreCase(targetScheme)
+                        || (p.connectionId() != null && p.connectionId().equals(connectionId))))
+                .findFirst()
+                .orElse(null);
+
+        if (targetPath != null) {
+            connectivity.addPath(targetPath.activate(connectionId));
+            logger.fine("Connectivity: Activated path " + targetPath.pathId() + " with connection " + connectionId);
         } else {
-            // Create synthetic active path
-            PathId pathId = PathId.of("path:" + peerId.value() + ":" + targetScheme + ":conn:" + connectionId);
-            EndpointAddress endpoint = targetScheme.equals("bluetooth")
-                    ? EndpointAddress.of("bluetooth", connectionId.substring(3), 1)
-                    : EndpointAddress.tcp("unknown", 0);
-            ConnectivityPath active = ConnectivityPath.active(pathId, peerId, targetScheme, endpoint, connectionId);
-            connectivity.addPath(active);
-            logger.fine("Connectivity: Created ACTIVE path " + pathId + " for connection " + connectionId);
+            // Check if already active with same connectionId
+            boolean alreadyActive = connectivity.activePaths().stream()
+                    .anyMatch(p -> Objects.equals(p.connectionId(), connectionId));
+            if (!alreadyActive) {
+                PathId pathId = PathId.of("path:" + peerId.value() + ":" + targetScheme + ":conn:" + connectionId);
+                EndpointAddress endpoint = targetScheme.equals("bluetooth")
+                        ? EndpointAddress.of("bluetooth", connectionId.startsWith("bt:") ? connectionId.substring(3) : connectionId, 1)
+                        : EndpointAddress.tcp("unknown", 0);
+                ConnectivityPath active = ConnectivityPath.active(pathId, peerId, targetScheme, endpoint, connectionId);
+                connectivity.addPath(active);
+                logger.fine("Connectivity: Created ACTIVE path " + pathId + " for connection " + connectionId);
+            }
         }
     }
 
