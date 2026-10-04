@@ -29,7 +29,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 /**
- * A.D2.2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Surgically stabilized cockpit.
+ * A.D2.2 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Surgically stabilized cockpit.
  * Fix 3: RX event now shows payload content from ApplicationMessageListener, not messageId from ProtocolListener.
  * Fix 2: BT connection defers bindSession until real PeerId arrives via JOIN.
  * Fix 4: Timestamp resolution improved to HH:mm:ss.SSS.
@@ -110,7 +110,7 @@ class DiagnosticActivity : Activity() {
                     conn.activePaths().any { it.transportName().equals("tcp", ignoreCase = true) }
                 }.orElse(false)
                 if (hasActiveTcp) {
-                    addSystemEvent("TCP already ACTIVE for ${peer.value()} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skipping")
+                    addSystemEvent("TCP already ACTIVE for ${peer.value()} ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â skipping")
                 } else {
                     connectTcp(disc.hostAddress(), disc.port(), peer)
                 }
@@ -137,7 +137,7 @@ class DiagnosticActivity : Activity() {
             }
         })
 
-        // Protocol listener ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Fix 3: NO RX event here.
+        // Protocol listener ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Fix 3: NO RX event here.
         // RX is now posted from ApplicationMessageListener where payload content is available.
         activityProtocolListener = object : ProtocolListener {
             override fun onPeerJoined(peerIdStr: String, message: Message) {
@@ -178,7 +178,7 @@ class DiagnosticActivity : Activity() {
             }
         }
 
-        // Fix 3: Application message listener ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â RX event posted HERE with real content.
+        // Fix 3: Application message listener ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â RX event posted HERE with real content.
         // DefaultApplicationMessagingService decodes the framed payload into
         // ApplicationMessage.content() before firing this callback.
         manager.coordinator.setProtocolListener(activityProtocolListener)
@@ -392,27 +392,21 @@ class DiagnosticActivity : Activity() {
     }
 
     private fun simulateTransportDrop(transportName: String) {
-        val peer = connectedPeerId ?: return
+        val peer = connectedPeerId ?: run {
+            addErrorEvent("DROP ERROR: No connected peer")
+            return
+        }
         addSystemEvent("DROP requested target=$transportName")
         backgroundExecutor.execute {
             try {
-                manager.connectivityRegistry.lookup(peer).ifPresent { conn ->
-                    var found = false
-                    for (path in conn.activePaths()) {
-                        if (path.transportName().equals(transportName, ignoreCase = true)) {
-                            conn.addPath(path.deactivate())
-                            found = true
-                            handler.post {
-                                addSystemEvent("PATH: ${path.pathId().value()} ($transportName) ACTIVE->INACTIVE")
-                                updateDashboard()
-                            }
-                        }
+                val dropped = manager.dropTransport(peer, transportName)
+                handler.post {
+                    if (dropped) {
+                        addSystemEvent("DROP: Successfully dropped $transportName connection")
+                    } else {
+                        addErrorEvent("DROP: No active $transportName path found")
                     }
-                    if (!found) {
-                        handler.post {
-                            addErrorEvent("DROP: No active $transportName path found")
-                        }
-                    }
+                    updateDashboard()
                 }
             } catch (e: Exception) {
                 handler.post { addErrorEvent("DROP ERROR: ${e.message}") }

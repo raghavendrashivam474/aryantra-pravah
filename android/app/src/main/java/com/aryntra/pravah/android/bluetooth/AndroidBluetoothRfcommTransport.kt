@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.android.bluetooth
+package com.aryntra.pravah.android.bluetooth
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter

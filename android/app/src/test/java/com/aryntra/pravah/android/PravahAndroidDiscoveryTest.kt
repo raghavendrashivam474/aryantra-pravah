@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.android
+package com.aryntra.pravah.android
 
 import com.aryntra.pravah.connectivity.PathState
 import com.aryntra.pravah.peer.PeerId

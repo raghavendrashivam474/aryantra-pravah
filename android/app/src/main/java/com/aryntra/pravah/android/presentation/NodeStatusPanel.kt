@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.android.presentation
+package com.aryntra.pravah.android.presentation
 
 import android.widget.TextView
 import com.aryntra.pravah.android.state.NodeStatusState

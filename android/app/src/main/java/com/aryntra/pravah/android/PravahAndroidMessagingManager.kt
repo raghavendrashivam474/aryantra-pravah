@@ -236,6 +236,38 @@ class PravahAndroidMessagingManager(
         return if (connId.startsWith("/")) connId.substring(1) else connId
     }
 
+        /**
+     * Authoritatively drops a specific transport connection for a peer,
+     * closing the underlying physical socket/link and triggering lifecycle cleanup.
+     */
+    fun dropTransport(peerId: PeerId, transportScheme: String): Boolean {
+        var dropped = false
+        connectivityRegistry.lookup(peerId).ifPresent { conn ->
+            for (path in conn.activePaths()) {
+                if (path.transportName().equals(transportScheme, ignoreCase = true) ||
+                    path.endpointAddress().transportScheme().equals(transportScheme, ignoreCase = true)) {
+                    val connId = path.connectionId()
+                    if (connId != null) {
+                        try {
+                            if (transportScheme.equals("tcp", ignoreCase = true)) {
+                                tcpTransport.disconnect(connId)
+                            } else if (transportScheme.equals("bluetooth", ignoreCase = true) ||
+                                       transportScheme.equals("bt", ignoreCase = true)) {
+                                bluetoothTransport.disconnect(connId)
+                            }
+                            dropped = true
+                        } catch (e: Exception) {
+                            logger.warning("Error disconnecting transport $transportScheme: ${e.message}")
+                        }
+                    }
+                    // Ensure local path deactivation
+                    conn.addPath(path.deactivate())
+                }
+            }
+        }
+        return dropped
+    }
+
     private fun cleanOrphanedBtNode(authenticatedPeer: PeerId) {
         val orphanedPeers = connectivityRegistry.allConnectivities()
             .map { it.peerId() }
@@ -256,3 +288,4 @@ class PravahAndroidMessagingManager(
 
     override fun close() { stop() }
 }
+

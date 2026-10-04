@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.android
+package com.aryntra.pravah.android
 
 import com.aryntra.pravah.core.LifecycleState
 import com.aryntra.pravah.core.PravahConfig

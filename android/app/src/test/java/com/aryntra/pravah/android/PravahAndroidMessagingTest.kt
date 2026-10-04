@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.android
+package com.aryntra.pravah.android
 
 import com.aryntra.pravah.messaging.ApplicationMessage
 import com.aryntra.pravah.messaging.ApplicationMessageListener
