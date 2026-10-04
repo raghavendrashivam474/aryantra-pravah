@@ -7,6 +7,8 @@
 ---
 
 ## 1. Architectural Layer Diagram
+
+```text
 ┌─────────────────────────────────────────────────────────┐
 │ PRAVAAH CORE (Java) │
 │ /src/main/java/ │
@@ -99,10 +101,7 @@
 │ │ OperationsPanel (A.D1 preserved) │ │
 │ └────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
-
-text
-
-
+```
 ---
 
 ## 2. Key Design Decisions
@@ -149,6 +148,8 @@ A.D2 reads `TransitionBuffer` counters through `manager.router.transitionBuffer(
 ---
 
 ## 4. Thread Model
+
+```text
 Transport I/O Thread (Core)
 │
 ├── PathStateListener callback
@@ -183,9 +184,7 @@ Main/UI Thread
 │ │
 │ ▼
 │ panel.render() [updates TextViews]
-
-text
-
+```
 
 ---
 
