@@ -20,9 +20,8 @@ import java.util.logging.Logger;
  * Orchestrating coordinator linking LAN & Bluetooth Discovery, Peer Registry, Presence Manager,
  * and Connectivity Registry.
  *
- * <p>S6.4 & S8.3 Integration: When a reachability candidate is discovered via any transport,
- * an idempotent CANDIDATE ConnectivityPath is registered. Multiple distinct transport candidates
- * for the same PeerId will live side-by-side in the PeerConnectivity record.</p>
+ * <p>A.D2.2: Stabilized path lifecycle. Prunes redundant inactive paths to prevent
+ * stale path accumulation during repeated connect/disconnect cycles.</p>
  */
 public final class PeerPresenceBridge implements PeerDiscoveryListener {
     private static final Logger logger = Logger.getLogger(PeerPresenceBridge.class.getName());
@@ -56,16 +55,13 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
         Objects.requireNonNull(candidate, "candidate must not be null");
         PeerId peerId = candidate.peerId();
 
-        // 1. Update/Report to Presence Manager
         presenceManager.reportDiscovered(peerId, candidate.endpointAddress().host(), candidate.endpointAddress().port());
 
-        // 2. Register in PeerRegistry as known (disconnected) if not already present
         if (!registry.contains(peerId)) {
             logger.info("Registering newly discovered peer: " + peerId.value());
             registry.register(PeerRecord.disconnected(peerId));
         }
 
-        // 3. Register deterministic CANDIDATE connectivity path
         if (connectivityRegistry != null) {
             ConnectivityPath path = candidate.toCandidatePath();
             connectivityRegistry.registerPath(peerId, path);
@@ -77,14 +73,10 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
         Objects.requireNonNull(peerId, "peerId must not be null");
         Objects.requireNonNull(connectionId, "connectionId must not be null");
 
-        // 1. Update Registry with the active connection identifier
         registry.register(peerId, connectionId);
-
-        // 2. Update Presence to CONNECTED
         presenceManager.reportConnected(peerId);
         logger.fine("Presence Bridge: Peer " + peerId.value() + " marked CONNECTED.");
 
-        // 3. Activate connectivity path
         if (connectivityRegistry != null) {
             activatePath(peerId, connectionId);
         }
@@ -112,7 +104,16 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
                         logger.fine("Connectivity: Deactivated specific path " + path.pathId());
                     }
                 }
-                // If no active paths remain, mark peer disconnected in registry & presence
+                
+                // A.D2.2 Fix: Prune other INACTIVE paths for this transport scheme to clean up stale state
+                String targetScheme = connectionId.startsWith("bt:") ? "bluetooth" : "tcp";
+                connectivity.allPaths().stream()
+                        .filter(p -> !p.isActive() && p.transportName().equalsIgnoreCase(targetScheme))
+                        .forEach(p -> {
+                            // If we have an active connection or this is a redundant inactive entry, prune it
+                            connectivity.removePath(p.pathId());
+                        });
+
                 if (!connectivity.hasActivePath()) {
                     registry.register(PeerRecord.disconnected(peerId));
                     presenceManager.reportDisconnected(peerId);
@@ -127,7 +128,15 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
         PeerConnectivity connectivity = connectivityRegistry.getOrCreate(peerId);
         String targetScheme = connectionId.startsWith("bt:") ? "bluetooth" : "tcp";
 
-        // Check for existing candidate or inactive path matching this scheme or connection
+        // A.D2.2 Fix: Prune duplicate/orphaned inactive paths first before activating
+        connectivity.allPaths().stream()
+                .filter(p -> !p.isActive() && p.transportName().equalsIgnoreCase(targetScheme))
+                .skip(1) // Keep at most one inactive/candidate template
+                .forEach(p -> {
+                    connectivity.removePath(p.pathId());
+                    logger.fine("Connectivity: Pruned redundant inactive path " + p.pathId());
+                });
+
         ConnectivityPath targetPath = connectivity.allPaths().stream()
                 .filter(p -> !p.isActive() && (p.transportName().equalsIgnoreCase(targetScheme)
                         || (p.connectionId() != null && p.connectionId().equals(connectionId))))
@@ -138,7 +147,6 @@ public final class PeerPresenceBridge implements PeerDiscoveryListener {
             connectivity.addPath(targetPath.activate(connectionId));
             logger.fine("Connectivity: Activated path " + targetPath.pathId() + " with connection " + connectionId);
         } else {
-            // Check if already active with same connectionId
             boolean alreadyActive = connectivity.activePaths().stream()
                     .anyMatch(p -> Objects.equals(p.connectionId(), connectionId));
             if (!alreadyActive) {
