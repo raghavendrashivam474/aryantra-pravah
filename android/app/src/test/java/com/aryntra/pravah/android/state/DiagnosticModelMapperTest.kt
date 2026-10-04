@@ -14,9 +14,9 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 /**
- * A.D2.1 Test Suite — Extended regression test coverage (§19).
+ * A.D2.2 Test Suite — Extended regression test coverage (§24).
  * Covers stopped state, topology, PathState mapping, route resolution,
- * duplicate path handling, and dispatch route fallback.
+ * duplicate path handling, dispatch route fallback, and stale path cleanup.
  */
 class DiagnosticModelMapperTest {
 
@@ -122,7 +122,6 @@ class DiagnosticModelMapperTest {
 
     @Test
     fun testDispatchRouteFallbackWhenNoActivePath() {
-        // Issue E: When only INACTIVE paths exist, dispatch route must be NONE
         val tcpPathId = PathId.of("tcp-p1")
         val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
         val inactiveTcp = ConnectivityPath.inactive(tcpPathId, remotePeerId, "tcp", tcpEndpoint)
@@ -138,7 +137,6 @@ class DiagnosticModelMapperTest {
 
     @Test
     fun testDuplicatePathOrderingActiveFirst() {
-        // Issue C: When an active and inactive path coexist, active must sort first
         val inactivePathId = PathId.of("tcp-p0")
         val activePathId = PathId.of("tcp-p1")
         val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
@@ -151,11 +149,30 @@ class DiagnosticModelMapperTest {
 
         val state = DiagnosticModelMapper.map(manager, remotePeerId)
         assertEquals(2, state.paths.size)
-        // First path in list must be the ACTIVE one
         assertEquals("ACTIVE", state.paths[0].pathState)
         assertTrue(state.paths[0].isSelected)
         assertEquals("INACTIVE", state.paths[1].pathState)
         assertFalse(state.paths[1].isSelected)
+    }
+
+    @Test
+    fun testStalePathRemovalAndCleanup() {
+        // Section 24: Verify removePath() cleans up entries properly
+        val pathId = PathId.of("tcp-p1")
+        val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
+        val activeTcp = ConnectivityPath.active(pathId, remotePeerId, "tcp", tcpEndpoint, "tcp-conn-101")
+
+        manager.connectivityRegistry.registerPath(remotePeerId, activeTcp)
+        val stateBefore = DiagnosticModelMapper.map(manager, remotePeerId)
+        assertEquals(1, stateBefore.paths.size)
+
+        // Remove the path
+        val connectivity = manager.connectivityRegistry.lookup(remotePeerId).orElseThrow()
+        connectivity.removePath(pathId)
+
+        val stateAfter = DiagnosticModelMapper.map(manager, remotePeerId)
+        assertEquals(0, stateAfter.paths.size)
+        assertEquals(0, stateAfter.snapshot.activePathsCount)
     }
 
     @Test
