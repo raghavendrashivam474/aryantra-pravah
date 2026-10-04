@@ -52,7 +52,8 @@ object DiagnosticModelMapper {
 
             // Issue E: Resolve active dispatch route from router
             val resolvedRoute = try {
-                val selected = manager.router.resolveConnectionId(conn.peerId())
+                val rawSelected = manager.router.resolveConnectionId(conn.peerId())
+                val selected = if (rawSelected != null && rawSelected.startsWith("/")) rawSelected.substring(1) else rawSelected
                 if (selected != null && selected.isNotEmpty()) selected else "NONE"
             } catch (_: Exception) {
                 "NONE"
