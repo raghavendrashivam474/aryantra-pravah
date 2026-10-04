@@ -29,7 +29,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 /**
- * A.D2.2 — Surgically stabilized cockpit.
+ * A.D2.2 Ã¢â‚¬â€ Surgically stabilized cockpit.
  * Fix 3: RX event now shows payload content from ApplicationMessageListener, not messageId from ProtocolListener.
  * Fix 2: BT connection defers bindSession until real PeerId arrives via JOIN.
  * Fix 4: Timestamp resolution improved to HH:mm:ss.SSS.
@@ -48,6 +48,7 @@ class DiagnosticActivity : Activity() {
 
     // Fix 2: Track synthetic BT PeerId for cleanup after real JOIN
     private var syntheticBtPeerId: PeerId? = null
+    private lateinit var activityProtocolListener: ProtocolListener
 
     // Component Panels
     private lateinit var nodeStatusPanel: NodeStatusPanel
@@ -109,7 +110,7 @@ class DiagnosticActivity : Activity() {
                     conn.activePaths().any { it.transportName().equals("tcp", ignoreCase = true) }
                 }.orElse(false)
                 if (hasActiveTcp) {
-                    addSystemEvent("TCP already ACTIVE for ${peer.value()} — skipping")
+                    addSystemEvent("TCP already ACTIVE for ${peer.value()} Ã¢â‚¬â€ skipping")
                 } else {
                     connectTcp(disc.hostAddress(), disc.port(), peer)
                 }
@@ -136,9 +137,9 @@ class DiagnosticActivity : Activity() {
             }
         })
 
-        // Protocol listener — Fix 3: NO RX event here.
+        // Protocol listener Ã¢â‚¬â€ Fix 3: NO RX event here.
         // RX is now posted from ApplicationMessageListener where payload content is available.
-        manager.coordinator.setProtocolListener(object : ProtocolListener {
+        activityProtocolListener = object : ProtocolListener {
             override fun onPeerJoined(peerIdStr: String, message: Message) {
                 postEvent("JOIN", "Peer $peerIdStr joined")
                 handler.post {
@@ -175,11 +176,12 @@ class DiagnosticActivity : Activity() {
                     }
                 }
             }
-        })
+        }
 
-        // Fix 3: Application message listener — RX event posted HERE with real content.
+        // Fix 3: Application message listener Ã¢â‚¬â€ RX event posted HERE with real content.
         // DefaultApplicationMessagingService decodes the framed payload into
         // ApplicationMessage.content() before firing this callback.
+        manager.coordinator.setProtocolListener(activityProtocolListener)
         manager.addMessageListener(ApplicationMessageListener { msg ->
             handler.post {
                 val senderStr = msg.sender().value().take(16)
@@ -406,8 +408,15 @@ class DiagnosticActivity : Activity() {
         }
     }
 
+
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            // Lifecycle safety: unregister listener on destroy to prevent stale callbacks
+            val coord = manager.coordinator
+            val removeMethod = coord.javaClass.getMethod("removeProtocolListener", ProtocolListener::class.java)
+            removeMethod.invoke(coord, activityProtocolListener)
+        } catch (_: Exception) {}
         backgroundExecutor.shutdown()
         manager.close()
     }

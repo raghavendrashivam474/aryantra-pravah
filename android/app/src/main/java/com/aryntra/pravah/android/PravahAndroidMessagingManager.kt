@@ -59,24 +59,31 @@ class PravahAndroidMessagingManager(
     val pathPolicy: PathSelectionPolicy = PathSelectionPolicy.preferSchemes("tcp", "bluetooth", "bt")
 
     val coordinator = object : PeerConnectionCoordinator(compositeTransport, registry, presenceBridge) {
-        private var downstreamListener: ProtocolListener? = null
+        private val protocolListeners = java.util.concurrent.CopyOnWriteArrayList<ProtocolListener>()
 
-        override fun setProtocolListener(listener: ProtocolListener?) {
-            this.downstreamListener = listener
+        fun addProtocolListener(listener: ProtocolListener) {
+            if (!protocolListeners.contains(listener)) {
+                protocolListeners.add(listener)
+                rebuildSuperListener()
+            }
+        }
+
+        fun removeProtocolListener(listener: ProtocolListener) {
+            if (protocolListeners.remove(listener)) {
+                rebuildSuperListener()
+            }
+        }
+
+        private fun rebuildSuperListener() {
             super.setProtocolListener(object : ProtocolListener {
                 override fun onPeerJoined(peerIdStr: String, message: Message) {
                     val remotePeer = PeerId.of(peerIdStr)
-                    
-                    // Normalize connection ID & bind
-                    getConnectionIdForPeer(remotePeer).ifPresent { rawConnId ->
-                        val connId = cleanConnId(rawConnId)
-                        presenceBridge.handlePeerConnected(remotePeer, connId)
-                    }
 
-                    // Clean up any orphaned temporary remote-bt-node entries
+                    // Clean up any orphaned temporary remote-bt-node entries (Legitimate migration)
                     cleanOrphanedBtNode(remotePeer)
 
-                    downstreamListener?.onPeerJoined(peerIdStr, message)
+                    // Dispatch to all registered listeners (F1 Multi-cast)
+                    protocolListeners.forEach { it.onPeerJoined(peerIdStr, message) }
 
                     if (message != null && message.messageId().startsWith("join-")) {
                         try {
@@ -89,17 +96,21 @@ class PravahAndroidMessagingManager(
                 }
 
                 override fun onMessageReceived(peerIdStr: String, message: Message) {
-                    val remotePeer = PeerId.of(peerIdStr)
-                    getConnectionIdForPeer(remotePeer).ifPresent { rawConnId ->
-                        presenceBridge.handlePeerConnected(remotePeer, cleanConnId(rawConnId))
-                    }
-                    downstreamListener?.onMessageReceived(peerIdStr, message)
+                    // Redundant activations completely removed (F2 Fix). 
+                    // Strictly dispatch to listeners.
+                    protocolListeners.forEach { it.onMessageReceived(peerIdStr, message) }
                 }
 
                 override fun onPeerLeft(peerIdStr: String, message: Message) {
-                    downstreamListener?.onPeerLeft(peerIdStr, message)
+                    protocolListeners.forEach { it.onPeerLeft(peerIdStr, message) }
                 }
             })
+        }
+
+        override fun setProtocolListener(listener: ProtocolListener?) {
+            if (listener != null) {
+                addProtocolListener(listener)
+            }
         }
     }
 
