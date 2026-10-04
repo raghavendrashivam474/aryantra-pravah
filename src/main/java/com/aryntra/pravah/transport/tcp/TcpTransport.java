@@ -225,9 +225,11 @@ public class TcpTransport implements Transport {
     }
 
     private synchronized void attachActiveSocket(Socket socket) throws IOException {
-        String id = socket.getRemoteSocketAddress() != null
+        String rawAddr = socket.getRemoteSocketAddress() != null
                 ? socket.getRemoteSocketAddress().toString()
                 : "unknown-" + System.nanoTime();
+        // Normalize: strip leading '/' from InetSocketAddress.toString() for canonical "host:port"
+        String id = rawAddr.startsWith("/") ? rawAddr.substring(1) : rawAddr;
 
         // Ensure any existing connection with the identical ID is cleaned up first
         closeConnection(id);
