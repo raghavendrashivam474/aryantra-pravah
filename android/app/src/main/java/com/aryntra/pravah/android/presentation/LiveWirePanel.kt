@@ -1,14 +1,16 @@
-﻿package com.aryntra.pravah.android.presentation
+package com.aryntra.pravah.android.presentation
 
 import android.widget.ScrollView
 import android.widget.TextView
+import com.aryntra.pravah.android.state.LiveWireEvent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * Diagnostic event stream and live terminal wire (§12).
- * Strictly handles event message formatting and autoscroll locks.
+ * A.D2: Upgraded LiveWirePanel.
+ * Processes structured domain events with explicit categories.
+ * Prevents log scraping and arbitrary dumps (§13).
  */
 class LiveWirePanel(
     private val scrollLog: ScrollView,
@@ -18,12 +20,31 @@ class LiveWirePanel(
 
     fun log(msg: String) {
         val ts = timeFmt.format(Date())
-        tvLog.append("[$ts] $msg\n")
-        scrollLog.post { 
-            scrollLog.fullScroll(ScrollView.FOCUS_DOWN) 
+        tvLog.append("[$ts] SYSTEM: $msg\n")
+        scrollToBottom()
+    }
+
+    fun appendEvent(event: LiveWireEvent) {
+        val categoryMarker = when (event.eventType) {
+            "TX" -> "▲ MSG TX"
+            "RX" -> "▼ MSG RX"
+            "JOIN" -> "◆ PEER JOIN"
+            "LEFT" -> "◇ PEER LEFT"
+            "PATH" -> "⇄ PATH CHG"
+            "BUFFER" -> "⚿ BUFFER"
+            "ERROR" -> "❌ ERROR"
+            else -> "■ SYSTEM"
+        }
+        tvLog.append("[${event.timestamp}] $categoryMarker: ${event.detail}\n")
+        scrollToBottom()
+    }
+
+    private fun scrollToBottom() {
+        scrollLog.post {
+            scrollLog.fullScroll(ScrollView.FOCUS_DOWN)
         }
     }
-    
+
     fun clear() {
         tvLog.text = ""
     }

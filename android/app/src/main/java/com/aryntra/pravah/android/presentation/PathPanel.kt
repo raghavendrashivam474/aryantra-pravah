@@ -1,14 +1,21 @@
-﻿package com.aryntra.pravah.android.presentation
+package com.aryntra.pravah.android.presentation
 
 import com.aryntra.pravah.android.state.PathItemState
 
 /**
- * Renders active multi-path topologies and dynamic dispatch routes (§11).
+ * A.D2: Renders active multi-path topologies and dispatch routes (§11).
+ * Extended to display core state enums (ACTIVE/CANDIDATE/INACTIVE) 
+ * and render selected route accents.
  */
 class PathPanel {
     fun formatPath(state: PathItemState): String {
-        val symbol = if (state.isActive) "● ACTIVE" else "○ INACTIVE"
-        return " ├── [${state.transportType}] $symbol (${state.connectionId})\n"
+        val symbol = when (state.pathState) {
+            "ACTIVE" -> "● ACTIVE"
+            "CANDIDATE" -> "◐ CANDIDATE"
+            else -> "○ INACTIVE"
+        }
+        val selectionAccent = if (state.isSelected) " [SELECTED ROUTE]" else ""
+        return " ├── [${state.transportType}] $symbol (${state.connectionId})$selectionAccent\n"
     }
 
     fun formatDispatchRoute(resolvedRoute: String): String {
