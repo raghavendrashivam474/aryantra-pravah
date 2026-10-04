@@ -1,7 +1,6 @@
 package com.aryntra.pravah.connectivity;
 
 import com.aryntra.pravah.peer.PeerId;
-
 import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -9,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Aggregates and manages the set of known communication paths for a single {@link PeerId}.
@@ -20,9 +20,9 @@ import java.util.Optional;
  * S6.1 - Phase 6: Connectivity Evolution
  */
 public final class PeerConnectivity {
-
     private final PeerId peerId;
     private final Map<PathId, ConnectivityPath> paths = new LinkedHashMap<>();
+    private final List<PathStateListener> listeners = new CopyOnWriteArrayList<>();
 
     public PeerConnectivity(PeerId peerId) {
         this.peerId = Objects.requireNonNull(peerId, "peerId must not be null");
@@ -33,7 +33,7 @@ public final class PeerConnectivity {
     }
 
     /**
-     * Adds or updates a path for this peer.
+     * Adds or updates a path for this peer and notifies listeners of any state transition.
      *
      * @param path the path to add (must belong to this peer)
      * @throws IllegalArgumentException if the path does not belong to this peer
@@ -45,7 +45,13 @@ public final class PeerConnectivity {
                     "Path peerId [" + path.peerId() + "] does not match PeerConnectivity peerId [" + this.peerId + "]"
             );
         }
+        ConnectivityPath oldPath = paths.get(path.pathId());
+        PathState oldState = (oldPath != null) ? oldPath.state() : null;
         paths.put(path.pathId(), path);
+
+        if (oldState != path.state()) {
+            notifyListeners(path, oldState);
+        }
     }
 
     /**
@@ -58,7 +64,9 @@ public final class PeerConnectivity {
         if (pathId == null) {
             return Optional.empty();
         }
-        return Optional.ofNullable(paths.remove(pathId));
+        Optional<ConnectivityPath> removed = Optional.ofNullable(paths.remove(pathId));
+        removed.ifPresent(path -> notifyListeners(path.deactivate(), path.state()));
+        return removed;
     }
 
     /**
@@ -115,5 +123,29 @@ public final class PeerConnectivity {
      */
     public synchronized boolean isEmpty() {
         return paths.isEmpty();
+    }
+
+    // --- Listener Management ---
+
+    public void addPathStateListener(PathStateListener l) {
+        if (l != null && !listeners.contains(l)) {
+            listeners.add(l);
+        }
+    }
+
+    public void removePathStateListener(PathStateListener l) {
+        if (l != null) {
+            listeners.remove(l);
+        }
+    }
+
+    private void notifyListeners(ConnectivityPath path, PathState previousState) {
+        for (PathStateListener l : listeners) {
+            try {
+                l.onPathStateChanged(this.peerId, path, previousState);
+            } catch (Exception ex) {
+                // Prevent downstream callback errors from disrupting connectivity state mutations
+            }
+        }
     }
 }

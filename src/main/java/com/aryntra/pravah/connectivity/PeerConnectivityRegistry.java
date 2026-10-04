@@ -1,12 +1,13 @@
 package com.aryntra.pravah.connectivity;
 
 import com.aryntra.pravah.peer.PeerId;
-
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Thread-safe registry that maps logical {@link PeerId}s to their multi-path
@@ -15,11 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Allows a single PeerId to have multiple active, candidate, or inactive paths
  * concurrently, satisfying S6.2 requirements.</p>
  *
- * S6.2 - Phase 6: Multi-Path Peer Representation
+ * S6.2 — Phase 6: Multi-Path Peer Representation
  */
 public class PeerConnectivityRegistry {
-
     private final ConcurrentHashMap<PeerId, PeerConnectivity> peerMap = new ConcurrentHashMap<>();
+    private final List<PathStateListener> listeners = new CopyOnWriteArrayList<>();
 
     /**
      * Retrieves or creates the PeerConnectivity record for a peer.
@@ -29,7 +30,13 @@ public class PeerConnectivityRegistry {
      */
     public PeerConnectivity getOrCreate(PeerId peerId) {
         Objects.requireNonNull(peerId, "peerId must not be null");
-        return peerMap.computeIfAbsent(peerId, PeerConnectivity::new);
+        return peerMap.computeIfAbsent(peerId, id -> {
+            PeerConnectivity pc = new PeerConnectivity(id);
+            for (PathStateListener l : listeners) {
+                pc.addPathStateListener(l);
+            }
+            return pc;
+        });
     }
 
     /**
@@ -115,5 +122,25 @@ public class PeerConnectivityRegistry {
      */
     public void clear() {
         peerMap.clear();
+    }
+
+    // --- Dynamic Listener Registry Support ---
+
+    public void addPathStateListener(PathStateListener l) {
+        if (l != null && !listeners.contains(l)) {
+            listeners.add(l);
+            for (PeerConnectivity pc : peerMap.values()) {
+                pc.addPathStateListener(l);
+            }
+        }
+    }
+
+    public void removePathStateListener(PathStateListener l) {
+        if (l != null) {
+            listeners.remove(l);
+            for (PeerConnectivity pc : peerMap.values()) {
+                pc.removePathStateListener(l);
+            }
+        }
     }
 }
