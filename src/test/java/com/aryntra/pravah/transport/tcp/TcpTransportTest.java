@@ -482,4 +482,56 @@ class TcpTransportTest {
     private interface Condition {
         boolean eval();
     }
+
+    @Test
+    @DisplayName("S1: TcpTransport emits canonical connectionId without leading slash")
+    void testCanonicalConnectionIdWithoutLeadingSlash() throws Exception {
+        java.util.concurrent.CountDownLatch serverConnected = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch clientConnected = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<String> serverReportedConnId = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicReference<String> clientReportedConnId = new java.util.concurrent.atomic.AtomicReference<>();
+
+        TcpTransport server = new TcpTransport("127.0.0.1", 0);
+        server.start();
+        TcpTransport client = new TcpTransport("127.0.0.1", 0);
+        client.start();
+
+        try {
+            server.setListener(new com.aryntra.pravah.transport.TransportListener() {
+                @Override
+                public void onConnectionOpened(String connectionId) {
+                    serverReportedConnId.set(connectionId);
+                    serverConnected.countDown();
+                }
+                @Override public void onConnectionClosed(String connectionId) {}
+                @Override public void onDataReceived(String senderId, byte[] payload) {}
+            });
+
+            client.setListener(new com.aryntra.pravah.transport.TransportListener() {
+                @Override
+                public void onConnectionOpened(String connectionId) {
+                    clientReportedConnId.set(connectionId);
+                    clientConnected.countDown();
+                }
+                @Override public void onConnectionClosed(String connectionId) {}
+                @Override public void onDataReceived(String senderId, byte[] payload) {}
+            });
+
+            client.connect("127.0.0.1", server.getBoundPort());
+
+            org.junit.jupiter.api.Assertions.assertTrue(serverConnected.await(5, java.util.concurrent.TimeUnit.SECONDS), "Server timeout");
+            org.junit.jupiter.api.Assertions.assertTrue(clientConnected.await(5, java.util.concurrent.TimeUnit.SECONDS), "Client timeout");
+
+            org.junit.jupiter.api.Assertions.assertNotNull(serverReportedConnId.get());
+            org.junit.jupiter.api.Assertions.assertFalse(serverReportedConnId.get().startsWith("/"),
+                    "Server connection ID must NOT start with slash: " + serverReportedConnId.get());
+
+            org.junit.jupiter.api.Assertions.assertNotNull(clientReportedConnId.get());
+            org.junit.jupiter.api.Assertions.assertFalse(clientReportedConnId.get().startsWith("/"),
+                    "Client connection ID must NOT start with slash: " + clientReportedConnId.get());
+        } finally {
+            client.stop();
+            server.stop();
+        }
+    }
 }
