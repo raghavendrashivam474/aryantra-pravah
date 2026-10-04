@@ -286,6 +286,16 @@ public class TcpTransport implements Transport {
         }
     }
 
+        /**
+     * Explicitly closes and removes a specific active TCP connection.
+     * Triggers onConnectionClosed lifecycle notification.
+     *
+     * @param connectionId canonical "host:port" connection identifier
+     */
+    public synchronized void disconnect(String connectionId) {
+        closeConnection(connectionId);
+    }
+
     private void closeConnection(String id) {
         if (id == null) return;
         TcpConnection conn = connections.remove(id);
