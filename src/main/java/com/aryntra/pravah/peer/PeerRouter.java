@@ -9,11 +9,11 @@ import com.aryntra.pravah.protocol.Message;
 import com.aryntra.pravah.protocol.MessageEncoder;
 import com.aryntra.pravah.protocol.MessageType;
 import com.aryntra.pravah.transport.Transport;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.logging.Logger;
 
 /**
  * Resolves logical peer destinations into active transport connections and dispatches framed messages.
@@ -22,11 +22,13 @@ import java.util.Optional;
  * and connection-oriented transport delivery.</p>
  */
 public class PeerRouter {
+    private static final Logger LOGGER = Logger.getLogger(PeerRouter.class.getName());
 
     private final PeerRegistry registry;
     private final Transport transport;
     private final PeerConnectivityRegistry connectivityRegistry; // nullable for backward compat
     private final PathSelectionPolicy selectionPolicy;
+    private final TransitionBuffer transitionBuffer;
 
     public PeerRouter(PeerRegistry registry, Transport transport) {
         this(registry, transport, null, PathSelectionPolicy.defaultPolicy());
@@ -41,6 +43,41 @@ public class PeerRouter {
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.connectivityRegistry = connectivityRegistry;
         this.selectionPolicy = Objects.requireNonNull(selectionPolicy, "selectionPolicy must not be null");
+        this.transitionBuffer = new TransitionBuffer();
+
+        // Wire up state callbacks to flush the buffer on path activation or clear on full disconnect
+        if (this.connectivityRegistry != null) {
+            this.connectivityRegistry.addPathStateListener((peerId, path, prev) -> {
+                if (path.state() == com.aryntra.pravah.connectivity.PathState.ACTIVE) {
+                    LOGGER.info(() -> "Path activated for peer " + peerId.value() + " via " + path.transportName() + ". Flushing transition buffer.");
+                    this.transitionBuffer.flushForPeer(peerId, (dest, payload) -> {
+                        // Deliver flushed messages using authoritative path selection policy
+                        Optional<PeerConnectivity> maybeConn = this.connectivityRegistry.lookup(dest);
+                        if (maybeConn.isPresent()) {
+                            List<ConnectivityPath> active = maybeConn.get().activePaths();
+                            Optional<ConnectivityPath> selected = this.selectionPolicy.selectPath(dest, active);
+                            if (selected.isPresent() && selected.get().connectionId() != null) {
+                                this.transport.send(selected.get().connectionId(), payload);
+                                return;
+                            }
+                        }
+                        // Legacy fallback inside flush callback
+                        String fallbackConnId = this.resolveConnectionId(dest);
+                        this.transport.send(fallbackConnId, payload);
+                    });
+                } else if (path.state() == com.aryntra.pravah.connectivity.PathState.INACTIVE) {
+                    // Evict/Discard messages if all candidate and active paths are completely gone
+                    Optional<PeerConnectivity> maybeConn = this.connectivityRegistry.lookup(peerId);
+                    if (maybeConn.isPresent()) {
+                        PeerConnectivity pc = maybeConn.get();
+                        if (pc.activePaths().isEmpty() && pc.candidatePaths().isEmpty()) {
+                            LOGGER.info(() -> "No active or candidate paths remain for peer " + peerId.value() + ". Discarding transition buffer.");
+                            this.transitionBuffer.discardForPeer(peerId);
+                        }
+                    }
+                }
+            });
+        }
     }
 
     /**
@@ -53,7 +90,6 @@ public class PeerRouter {
     public void send(PeerId destination, Message message) {
         Objects.requireNonNull(destination, "destination must not be null");
         Objects.requireNonNull(message, "message must not be null");
-
         byte[] encoded = MessageEncoder.encode(message);
         byte[] framed = FrameEncoder.encode(encoded);
 
@@ -63,7 +99,6 @@ public class PeerRouter {
             if (maybeConnectivity.isPresent()) {
                 PeerConnectivity peerConn = maybeConnectivity.get();
                 List<ConnectivityPath> availablePaths = new ArrayList<>(peerConn.activePaths());
-
                 while (!availablePaths.isEmpty()) {
                     Optional<ConnectivityPath> selected = selectionPolicy.selectPath(destination, availablePaths);
                     if (selected.isEmpty()) {
@@ -85,6 +120,17 @@ public class PeerRouter {
                         availablePaths.remove(path);
                     }
                 }
+
+                // --- B.R2: Bounded Transition-Window Buffer Hook ---
+                // If we reach here, we attempted to send via multi-path, but no active path was usable.
+                // If there are expected candidate paths, we buffer the message during this transition window.
+                if (!peerConn.candidatePaths().isEmpty()) {
+                    boolean buffered = transitionBuffer.offer(destination, message, framed);
+                    if (buffered) {
+                        LOGGER.info(() -> "Transition-window buffer: captured message " + message.messageId() + " for peer " + destination.value());
+                        return; // Buffered successfully, complete execution gracefully
+                    }
+                }
             }
         }
 
@@ -93,12 +139,10 @@ public class PeerRouter {
         if (maybePeer.isEmpty()) {
             throw new PeerRoutingException("Cannot route message: peer " + destination + " is not registered");
         }
-
         PeerRecord record = maybePeer.get();
         if (!record.isConnected()) {
             throw new PeerRoutingException("Cannot route message: peer " + destination + " is disconnected (no active connection)");
         }
-
         String connectionId = record.connectionId();
         try {
             transport.send(connectionId, framed);
@@ -122,17 +166,14 @@ public class PeerRouter {
                 }
             }
         }
-
         Optional<PeerRecord> maybePeer = registry.lookup(destination);
         if (maybePeer.isEmpty()) {
             throw new PeerRoutingException("Cannot route message: peer " + destination + " is not registered");
         }
-
         PeerRecord record = maybePeer.get();
         if (!record.isConnected()) {
             throw new PeerRoutingException("Cannot route message: peer " + destination + " is disconnected (no active connection)");
         }
-
         return record.connectionId();
     }
 
@@ -146,4 +187,5 @@ public class PeerRouter {
     public Transport transport() { return transport; }
     public PeerConnectivityRegistry connectivityRegistry() { return connectivityRegistry; }
     public PathSelectionPolicy selectionPolicy() { return selectionPolicy; }
+    public TransitionBuffer transitionBuffer() { return transitionBuffer; }
 }
