@@ -1,0 +1,111 @@
+﻿================================================================
+A.D2 OBSERVATION MAP (Section 7 / Section 26)
+Generated from actual source inspection
+================================================================
+
+1. NODE STATE
+   source:    DiagnosticActivity lifecycle + PravahAndroidMessagingManager.start()/stop()
+   current:   Activity knows running/stopped via its own state
+   required:  Node running, PeerId, uptime
+   status:    GREEN - already available through Activity state
+
+2. PEER IDENTITY
+   source:    com.aryntra.pravah.peer.PeerId (Java)
+              PeerRegistry via PravahAndroidMessagingManager
+   current:   DiagnosticModelMapper already imports PeerId
+   required:  List of connected peer IDs
+   status:    GREEN - PeerId available, registry accessible via manager
+
+3. PEER STATE
+   source:    com.aryntra.pravah.protocol.PeerState (Java enum)
+              PravahAndroidMessagingManager.getSessionState()
+   current:   DiagnosticModelMapper imports PeerState
+   required:  Per-peer JOINED/AUTHENTICATED/DISCONNECTED state
+   status:    GREEN - getSessionState() exists on manager
+
+4. PEER DISCOVERY
+   source:    PeerDiscoveryListener.onPeerDiscovered(DiscoveredPeer)
+              PravahAndroidMessagingManager.setDiscoveryListener()
+   current:   Manager exposes discovery callback
+   required:  Discovered peers list for topology
+   status:    GREEN - callback exists on manager
+
+5. TCP PATH STATE
+   source:    ConnectivityPath + PathState (Java enum)
+              PeerConnectivityRegistry
+   current:   Manager imports ConnectivityPath, PathId, PathState
+   required:  ACTIVE/CANDIDATE/INACTIVE per TCP path
+   status:    YELLOW - types exist in manager imports but
+              DiagnosticModelMapper may not yet consume them
+
+6. BLUETOOTH PATH STATE
+   source:    Same as TCP (ConnectivityPath + PathState)
+              AndroidBluetoothRfcommTransport
+   current:   Same connectivity model
+   required:  ACTIVE/CANDIDATE/INACTIVE per BT path
+   status:    YELLOW - same as TCP
+
+7. PATH TRANSITIONS (LIVE)
+   source:    PathStateListener (Java interface) in connectivity pkg
+   current:   Interface EXISTS but not yet wired to DiagnosticActivity
+   required:  Real-time CANDIDATE->ACTIVE->INACTIVE events
+   status:    YELLOW - listener interface exists, needs wiring
+              through manager to DiagnosticActivity
+
+8. SELECTED DISPATCH ROUTE
+   source:    PathSelectionPolicy (Java interface)
+              PeerRouter (Java)
+   current:   Manager imports both PathSelectionPolicy and PeerRouter
+   required:  Which path is currently selected for dispatch
+   status:    YELLOW - policy exists, need to expose selection
+              result through manager to mapper
+
+9. MESSAGE TX
+   source:    PravahAndroidMessagingManager.sendText()
+              ApplicationMessageListener
+   current:   Manager has sendText() and addMessageListener()
+   required:  Timestamp + peer + "MESSAGE TX" in LiveWire
+   status:    GREEN - send path is observable
+
+10. MESSAGE RX
+    source:    ProtocolListener.onMessageReceived()
+               ApplicationMessageListener
+    current:   Manager implements onMessageReceived callback
+    required:  Timestamp + peer + "MESSAGE RX" in LiveWire
+    status:    GREEN - receive callback exists
+
+11. ACK RX
+    source:    DeliveryOutbox / DeliveryRetryManager
+    current:   Manager imports DeliveryOutbox, OutboxState
+    required:  Timestamp + "ACK RX" in LiveWire
+    status:    YELLOW - outbox exists, ACK event exposure
+               needs verification
+
+12. PEER JOIN / LEAVE
+    source:    ProtocolListener.onPeerJoined() / onPeerLeft()
+    current:   Manager implements both callbacks
+    required:  LiveWire events + topology update
+    status:    GREEN - callbacks exist on manager
+
+13. TRANSITION BUFFER (B.R2)
+    source:    TransitionBuffer.java
+               totalBuffered(), totalFlushed(), totalExpired(),
+               totalEvicted(), totalRejected(), size(), currentBytes()
+    current:   All 5 counters + size + bytes are PUBLIC methods
+    required:  Buffer panel showing current + cumulative counts
+    status:    YELLOW - counters exist in Java core, need to
+               expose through manager to mapper boundary
+
+================================================================
+SUMMARY
+================================================================
+  GREEN  (already available):      7 items
+  YELLOW (available, needs wiring): 6 items
+  RED    (requires new capability): 0 items
+
+  NO RED ITEMS.
+  A.D2 can be built entirely from existing runtime capabilities.
+  No Core modifications required.
+  No new architectural boundaries required.
+
+================================================================
