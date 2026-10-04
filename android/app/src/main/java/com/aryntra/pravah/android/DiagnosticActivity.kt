@@ -12,7 +12,6 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.Button
 import android.widget.EditText
-import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -30,9 +29,10 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 /**
- * A.D2.1 — Stabilized Live Network Cockpit.
- * Fixes: BT device selection (A), scrolling (B), TCP idempotency (D),
- *        peer identity (F), topology label (G).
+ * A.D2.2 — Surgically stabilized cockpit.
+ * Fix 3: RX event now shows payload content from ApplicationMessageListener, not messageId from ProtocolListener.
+ * Fix 2: BT connection defers bindSession until real PeerId arrives via JOIN.
+ * Fix 4: Timestamp resolution improved to HH:mm:ss.SSS.
  */
 class DiagnosticActivity : Activity() {
 
@@ -42,7 +42,12 @@ class DiagnosticActivity : Activity() {
 
     private var connectedPeerId: PeerId? = null
     private val liveEventsList = CopyOnWriteArrayList<LiveWireEvent>()
-    private val timeFormatter = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+    // Fix 4: Sub-second timestamp resolution
+    private val timeFormatter = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+
+    // Fix 2: Track synthetic BT PeerId for cleanup after real JOIN
+    private var syntheticBtPeerId: PeerId? = null
 
     // Component Panels
     private lateinit var nodeStatusPanel: NodeStatusPanel
@@ -61,7 +66,6 @@ class DiagnosticActivity : Activity() {
 
         requestPermissionsIfRequired()
 
-        // 1. Core UI Elements Extraction
         val tvStatus: TextView = findViewById(R.id.tvStatus)
         tvMultiPathTopology = findViewById(R.id.tvMultiPathTopology)
         val tvLog: TextView = findViewById(R.id.tvLog)
@@ -75,8 +79,6 @@ class DiagnosticActivity : Activity() {
         val btnSimulateDrop: Button = findViewById(R.id.btnSimulateDrop)
         val btnSend: Button = findViewById(R.id.btnSend)
 
-        // 2. Initialize Components & Panels
-        // A.D2.1: LiveWirePanel no longer needs ScrollView (outer ScrollView handles it)
         nodeStatusPanel = NodeStatusPanel(tvStatus)
         networkSnapshotPanel = NetworkSnapshotPanel()
         peerPanel = PeerPanel()
@@ -87,7 +89,6 @@ class DiagnosticActivity : Activity() {
             btnConnectBt, btnSimulateDrop, etMessage, btnSend
         )
 
-        // 3. Set up local Peer ID and runtime messaging context
         val shortId = UUID.randomUUID().toString().substring(0, 8)
         val peerId = PeerId.of("android-$shortId")
         manager = PravahAndroidMessagingManager(peerId)
@@ -95,7 +96,6 @@ class DiagnosticActivity : Activity() {
         addSystemEvent("Pravah Hybrid Diagnostic Node initialized. PeerId: ${peerId.value()}")
         updateDashboard()
 
-        // 4. Operations click bindings
         btnStart.setOnClickListener { startRuntime() }
         btnStop.setOnClickListener { stopRuntime() }
         btnDiscover.setOnClickListener {
@@ -104,14 +104,12 @@ class DiagnosticActivity : Activity() {
         btnConnectTcp.setOnClickListener {
             val disc = manager.discoveredPeers.firstOrNull()
             if (disc != null) {
-                // A.D2.1 Fix D: Guard against duplicate TCP connect
                 val peer = disc.peerId()
                 val hasActiveTcp = manager.connectivityRegistry.lookup(peer).map { conn ->
                     conn.activePaths().any { it.transportName().equals("tcp", ignoreCase = true) }
                 }.orElse(false)
-
                 if (hasActiveTcp) {
-                    addSystemEvent("TCP already ACTIVE for ${peer.value()} — skipping duplicate connect")
+                    addSystemEvent("TCP already ACTIVE for ${peer.value()} — skipping")
                 } else {
                     connectTcp(disc.hostAddress(), disc.port(), peer)
                 }
@@ -129,7 +127,7 @@ class DiagnosticActivity : Activity() {
             }
         }
 
-        // 5. Setup Live Path State Transitions Listener
+        // Path state transitions
         manager.connectivityRegistry.addPathStateListener(PathStateListener { _, path, prev ->
             postEvent("PATH", "${path.transportName()} ${prev}->${path.state()}")
             val tb = manager.router.transitionBuffer()
@@ -138,15 +136,36 @@ class DiagnosticActivity : Activity() {
             }
         })
 
-        // 6. Setup Protocol Engine Listeners
+        // Protocol listener — Fix 3: NO RX event here.
+        // RX is now posted from ApplicationMessageListener where payload content is available.
         manager.coordinator.setProtocolListener(object : ProtocolListener {
             override fun onPeerJoined(peerIdStr: String, message: Message) {
                 postEvent("JOIN", "Peer $peerIdStr joined")
-                handler.post { bindSession(PeerId.of(peerIdStr)) }
+                handler.post {
+                    val realPeerId = PeerId.of(peerIdStr)
+
+                    // Fix 2: Clean up synthetic BT peer if real identity differs
+                    val synth = syntheticBtPeerId
+                    if (synth != null && synth.value() != peerIdStr) {
+                        try {
+                            manager.connectivityRegistry.removePeer(synth)
+                            addSystemEvent("Cleaned synthetic BT peer ${synth.value()} -> real $peerIdStr")
+                        } catch (_: Exception) {
+                            // Cleanup best-effort
+                        }
+                        syntheticBtPeerId = null
+                    }
+
+                    bindSession(realPeerId)
+                }
             }
+
             override fun onMessageReceived(peerIdStr: String, message: Message) {
-                postEvent("RX", "[${peerIdStr.take(16)}] ${message.messageId()}")
+                // Fix 3: Do NOT post RX here. The raw protocol Message contains
+                // messageId (UUID) and framed payload bytes, not human-readable content.
+                // The decoded content is available in ApplicationMessageListener below.
             }
+
             override fun onPeerLeft(peerIdStr: String, message: Message) {
                 postEvent("LEFT", "Peer $peerIdStr left")
                 handler.post {
@@ -158,15 +177,20 @@ class DiagnosticActivity : Activity() {
             }
         })
 
-        // 7. Application payload listener
+        // Fix 3: Application message listener — RX event posted HERE with real content.
+        // DefaultApplicationMessagingService decodes the framed payload into
+        // ApplicationMessage.content() before firing this callback.
         manager.addMessageListener(ApplicationMessageListener { msg ->
             handler.post {
+                val senderStr = msg.sender().value().take(16)
+                val content = msg.content()
+                postEvent("RX", "[$senderStr] $content")
                 bindSession(msg.sender())
                 updateDashboard()
             }
         })
 
-        // 8. Discovery listener
+        // Discovery listener
         manager.setDiscoveryListener { peer ->
             handler.post {
                 bindSession(peer.peerId())
@@ -215,7 +239,7 @@ class DiagnosticActivity : Activity() {
 
         val topoSb = StringBuilder()
         topoSb.append(networkSnapshotPanel.renderAsciiTopology(uiState.topology))
-        topoSb.append("\n── PATH CONNECTIONS ──\n")
+        topoSb.append("\n-- PATH CONNECTIONS --\n")
         if (uiState.peers.isNotEmpty()) {
             for (peer in uiState.peers) {
                 topoSb.append(peerPanel.formatPeerHeader(peer))
@@ -228,7 +252,7 @@ class DiagnosticActivity : Activity() {
             topoSb.append(" [No connected peer registrations]\n")
         }
 
-        topoSb.append("\n── TRANSITION BUFFER (B.R2) ──\n")
+        topoSb.append("\n-- TRANSITION BUFFER (B.R2) --\n")
         val bs = uiState.bufferState
         topoSb.append(String.format(" Queue: %-5d | Bytes: %-5d\n", bs.currentSize, bs.currentBytes))
         topoSb.append(String.format(" Buffered: %-4d | Flushed: %-4d\n", bs.totalBuffered, bs.totalFlushed))
@@ -236,8 +260,6 @@ class DiagnosticActivity : Activity() {
 
         tvMultiPathTopology.text = topoSb.toString()
     }
-
-    // --- Runtime Operations ---
 
     private fun startRuntime() {
         backgroundExecutor.execute {
@@ -301,9 +323,10 @@ class DiagnosticActivity : Activity() {
     }
 
     /**
-     * A.D2.1 Fix A: Bluetooth device selection via AlertDialog.
-     * Prevents accidental connection to non-Pravaah bonded devices
-     * (earbuds, speakers, etc.) by requiring explicit user selection.
+     * Fix 2: Bluetooth device selection with deferred identity binding.
+     * Creates a temporary PeerId for the transport connection, but defers
+     * bindSession() until onPeerJoined fires with the real PeerId from JOIN.
+     * The synthetic peer is cleaned up in onPeerJoined when the real identity arrives.
      */
     @SuppressLint("MissingPermission")
     private fun showBluetoothDeviceChooser() {
@@ -320,25 +343,29 @@ class DiagnosticActivity : Activity() {
             return
         }
 
-        // A.D2.1: Present explicit device selection dialog
         val deviceNames = bondedDevices.map { "${it.name ?: "Unknown"} [${it.address}]" }.toTypedArray()
 
         AlertDialog.Builder(this)
             .setTitle("Select Pravaah BT Peer")
             .setItems(deviceNames) { _, which ->
                 val selectedDevice = bondedDevices[which]
-                val targetPeerId = PeerId.of("remote-bt-${selectedDevice.address.replace(":", "").takeLast(6)}")
+                val tempPeerId = PeerId.of("remote-bt-${selectedDevice.address.replace(":", "").takeLast(6)}")
+
+                // Fix 2: Store synthetic PeerId for later cleanup in onPeerJoined
+                syntheticBtPeerId = tempPeerId
                 addSystemEvent("User selected BT device: ${selectedDevice.name} [${selectedDevice.address}]")
 
                 backgroundExecutor.execute {
                     try {
-                        val connId = manager.connectToBluetooth(selectedDevice.address, targetPeerId)
+                        val connId = manager.connectToBluetooth(selectedDevice.address, tempPeerId)
                         handler.post {
                             addSystemEvent("Bluetooth channel active: $connId")
-                            bindSession(targetPeerId)
+                            // Fix 2: Do NOT bindSession here. Wait for onPeerJoined
+                            // with the real PeerId from the JOIN exchange.
                         }
                     } catch (e: Exception) {
                         handler.post { addErrorEvent("BT CONNECT ERROR: ${e.message}") }
+                        syntheticBtPeerId = null
                     }
                 }
             }
