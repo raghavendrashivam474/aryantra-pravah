@@ -226,15 +226,19 @@ class PravahAndroidMessagingManager(
     }
 
     private fun cleanOrphanedBtNode(authenticatedPeer: PeerId) {
-        val tempBtPeer = PeerId.of("remote-bt-node")
-        if (tempBtPeer != authenticatedPeer) {
-            connectivityRegistry.lookup(tempBtPeer).ifPresent { conn ->
+        val orphanedPeers = connectivityRegistry.allConnectivities()
+            .map { it.peerId() }
+            .filter { it.value().startsWith("remote-bt-") && it != authenticatedPeer }
+
+        for (orphan in orphanedPeers) {
+            connectivityRegistry.lookup(orphan).ifPresent { conn ->
                 for (path in conn.allPaths()) {
                     if (path.isActive && path.connectionId() != null) {
                         presenceBridge.handlePeerConnected(authenticatedPeer, path.connectionId())
                     }
                 }
-                connectivityRegistry.removePeer(tempBtPeer)
+                connectivityRegistry.removePeer(orphan)
+                logger.info("Cleaned orphaned synthetic BT peer: ${orphan.value()} -> migrated to ${authenticatedPeer.value()}")
             }
         }
     }
