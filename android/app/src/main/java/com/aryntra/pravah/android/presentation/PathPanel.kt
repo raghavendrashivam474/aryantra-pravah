@@ -3,9 +3,8 @@ package com.aryntra.pravah.android.presentation
 import com.aryntra.pravah.android.state.PathItemState
 
 /**
- * A.D2: Renders active multi-path topologies and dispatch routes (§11).
- * Extended to display core state enums (ACTIVE/CANDIDATE/INACTIVE) 
- * and render selected route accents.
+ * A.D2.1: Renders path connections and dispatch routes.
+ * Issue E: Clearly distinguishes when a dispatch route is active vs NONE.
  */
 class PathPanel {
     fun formatPath(state: PathItemState): String {
@@ -19,6 +18,7 @@ class PathPanel {
     }
 
     fun formatDispatchRoute(resolvedRoute: String): String {
-        return " └── [DISPATCH ROUTE]: $resolvedRoute\n\n"
+        val display = if (resolvedRoute.isBlank() || resolvedRoute == "NONE") "NONE (No active path)" else resolvedRoute
+        return " └── [DISPATCH ROUTE]: $display\n\n"
     }
 }

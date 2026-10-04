@@ -6,11 +6,11 @@ import com.aryntra.pravah.peer.PeerId
 import com.aryntra.pravah.protocol.PeerState
 
 /**
- * A.D2: Extended mapper.
- * Preserves all A.D1 mapping logic.
- * Adds: PathState enum reading, selected route flag,
- *       topology construction, TransitionBuffer counters.
- * All new data flows through the existing manager boundary.
+ * A.D2.1: Stabilized mapper.
+ * Fixes:
+ * - Issue E: Dispatch route semantics (clearly distinguishes active route vs NONE)
+ * - Issue F: Preserves 16-char PeerId labels for distinguishable peer identity
+ * - Issue C: Sorts paths deterministically (ACTIVE paths first, then transport type)
  */
 object DiagnosticModelMapper {
 
@@ -39,19 +39,18 @@ object DiagnosticModelMapper {
             sessionState = sessionStr
         )
 
-        // --- A.D1 + A.D2: Iterate connectivity registry ---
         val allConnectivities = manager.connectivityRegistry.allConnectivities()
         val peersList = mutableListOf<PeerItemState>()
         val pathsList = mutableListOf<PathItemState>()
         var activePathsCount = 0
 
-        // A.D2: Topology builders
         val topologyPeers = mutableListOf<TopologyNode>()
         val topologyEdges = mutableListOf<TopologyEdge>()
 
         for (conn in allConnectivities) {
             val peerIdVal = conn.peerId().value()
 
+            // Issue E: Resolve active dispatch route from router
             val resolvedRoute = try {
                 val selected = manager.router.resolveConnectionId(conn.peerId())
                 if (selected != null && selected.isNotEmpty()) selected else "NONE"
@@ -67,15 +66,21 @@ object DiagnosticModelMapper {
                 )
             )
 
-            // A.D2: Add peer to topology
+            // Issue F: 16-char readable identifier
             topologyPeers.add(
                 TopologyNode(
                     id = peerIdVal,
-                    label = if (peerIdVal.length > 12) peerIdVal.take(12) + ".." else peerIdVal
+                    label = if (peerIdVal.length > 16) peerIdVal.take(16) + ".." else peerIdVal
                 )
             )
 
-            for (path in conn.allPaths()) {
+            // Issue C: Sort paths so ACTIVE appears before INACTIVE
+            val sortedPaths = conn.allPaths().sortedWith(
+                compareByDescending<ConnectivityPath> { it.isActive }
+                    .thenBy { it.transportName() }
+            )
+
+            for (path in sortedPaths) {
                 val transportName = path.transportName()
                 val transportType = when {
                     transportName.equals("tcp", ignoreCase = true) -> "TCP"
@@ -84,7 +89,6 @@ object DiagnosticModelMapper {
                     else -> transportName.uppercase()
                 }
 
-                // A.D2: Read real PathState from Core enum (§9)
                 val pathStateName = try {
                     path.state().name
                 } catch (_: Exception) {
@@ -92,13 +96,13 @@ object DiagnosticModelMapper {
                 }
 
                 val isActive = path.isActive
-
                 if (isActive) activePathsCount++
 
-                // A.D2: Determine if this path is the selected dispatch route (§10)
+                // Determine if this path is the active dispatch route
                 val isSelected = try {
                     val selectedConnId = manager.router.resolveConnectionId(conn.peerId())
                     val thisConnId = path.optionalConnectionId().orElse("")
+                    isActive &&
                     selectedConnId != null &&
                     thisConnId.isNotEmpty() &&
                     selectedConnId == thisConnId
@@ -107,8 +111,7 @@ object DiagnosticModelMapper {
                 }
 
                 val connIdDisplay = if (transportType == "BLUETOOTH") {
-                    val cleanConn = path.optionalConnectionId().orElse("no-conn")
-                    cleanConn
+                    path.optionalConnectionId().orElse("no-conn")
                 } else {
                     val rawConn = path.optionalConnectionId().orElse("no-conn")
                     if (rawConn.startsWith("bt:")) "no-conn"
@@ -127,7 +130,6 @@ object DiagnosticModelMapper {
                     )
                 )
 
-                // A.D2: Add edge to topology (§8-9)
                 topologyEdges.add(
                     TopologyEdge(
                         fromNodeId = "LOCAL",
@@ -145,7 +147,6 @@ object DiagnosticModelMapper {
             activePathsCount = activePathsCount
         )
 
-        // --- Operations (A.D1 preserved) ---
         val startEnabled = !isRunning
         val stopEnabled = isRunning
         val discoveryEnabled = isRunning
@@ -168,17 +169,15 @@ object DiagnosticModelMapper {
             sendEnabled = sendEnabled
         )
 
-        // --- A.D2: Topology assembly (§8-9) ---
         val topology = TopologyState(
             localNode = TopologyNode(
                 id = "LOCAL",
-                label = if (localPeerIdVal.length > 12) localPeerIdVal.take(12) + ".." else localPeerIdVal
+                label = if (localPeerIdVal.length > 16) localPeerIdVal.take(16) + ".." else localPeerIdVal
             ),
             peers = topologyPeers,
             edges = topologyEdges
         )
 
-        // --- A.D2: B.R2 TransitionBuffer observability (§18) ---
         val bufferState = try {
             val tb = manager.router.transitionBuffer()
             if (tb != null) {
