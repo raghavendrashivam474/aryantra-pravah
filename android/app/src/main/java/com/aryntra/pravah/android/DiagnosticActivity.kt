@@ -1,4 +1,4 @@
-package com.aryntra.pravah.android
+﻿package com.aryntra.pravah.android
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -29,7 +29,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 /**
- * A.D2.2 Ã¢â‚¬â€ Surgically stabilized cockpit.
+ * A.D2.2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Surgically stabilized cockpit.
  * Fix 3: RX event now shows payload content from ApplicationMessageListener, not messageId from ProtocolListener.
  * Fix 2: BT connection defers bindSession until real PeerId arrives via JOIN.
  * Fix 4: Timestamp resolution improved to HH:mm:ss.SSS.
@@ -110,7 +110,7 @@ class DiagnosticActivity : Activity() {
                     conn.activePaths().any { it.transportName().equals("tcp", ignoreCase = true) }
                 }.orElse(false)
                 if (hasActiveTcp) {
-                    addSystemEvent("TCP already ACTIVE for ${peer.value()} Ã¢â‚¬â€ skipping")
+                    addSystemEvent("TCP already ACTIVE for ${peer.value()} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â skipping")
                 } else {
                     connectTcp(disc.hostAddress(), disc.port(), peer)
                 }
@@ -119,7 +119,7 @@ class DiagnosticActivity : Activity() {
             }
         }
         btnConnectBt.setOnClickListener { showBluetoothDeviceChooser() }
-        btnSimulateDrop.setOnClickListener { simulateTcpDrop() }
+        btnSimulateDrop.setOnClickListener { showDropTransportDialog() }
         btnSend.setOnClickListener {
             val content = etMessage.text.toString()
             if (content.isNotEmpty()) {
@@ -137,7 +137,7 @@ class DiagnosticActivity : Activity() {
             }
         })
 
-        // Protocol listener Ã¢â‚¬â€ Fix 3: NO RX event here.
+        // Protocol listener ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Fix 3: NO RX event here.
         // RX is now posted from ApplicationMessageListener where payload content is available.
         activityProtocolListener = object : ProtocolListener {
             override fun onPeerJoined(peerIdStr: String, message: Message) {
@@ -178,7 +178,7 @@ class DiagnosticActivity : Activity() {
             }
         }
 
-        // Fix 3: Application message listener Ã¢â‚¬â€ RX event posted HERE with real content.
+        // Fix 3: Application message listener ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â RX event posted HERE with real content.
         // DefaultApplicationMessagingService decodes the framed payload into
         // ApplicationMessage.content() before firing this callback.
         manager.coordinator.setProtocolListener(activityProtocolListener)
@@ -375,18 +375,44 @@ class DiagnosticActivity : Activity() {
             .show()
     }
 
-    private fun simulateTcpDrop() {
+    private fun showDropTransportDialog() {
+        val peer = connectedPeerId ?: run {
+            addErrorEvent("DROP ERROR: No connected peer")
+            return
+        }
+        val transports = arrayOf("TCP", "BLUETOOTH")
+        android.app.AlertDialog.Builder(this)
+            .setTitle("SELECT TRANSPORT")
+            .setItems(transports) { _, which ->
+                when (which) {
+                    0 -> simulateTransportDrop("tcp")
+                    1 -> simulateTransportDrop("bluetooth")
+                }
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun simulateTransportDrop(transportName: String) {
         val peer = connectedPeerId ?: return
+        addSystemEvent("DROP requested target=$transportName")
         backgroundExecutor.execute {
             try {
                 manager.connectivityRegistry.lookup(peer).ifPresent { conn ->
+                    var found = false
                     for (path in conn.activePaths()) {
-                        if (path.transportName().equals("tcp", ignoreCase = true)) {
+                        if (path.transportName().equals(transportName, ignoreCase = true)) {
                             conn.addPath(path.deactivate())
+                            found = true
                             handler.post {
-                                addSystemEvent("SIMULATED TCP FAILURE: ${path.pathId().value()} DEACTIVATED")
+                                addSystemEvent("PATH: ${path.pathId().value()} ($transportName) ACTIVE->INACTIVE")
                                 updateDashboard()
                             }
+                        }
+                    }
+                    if (!found) {
+                        handler.post {
+                            addErrorEvent("DROP: No active $transportName path found")
                         }
                     }
                 }
@@ -394,6 +420,10 @@ class DiagnosticActivity : Activity() {
                 handler.post { addErrorEvent("DROP ERROR: ${e.message}") }
             }
         }
+    }
+
+    private fun simulateTcpDrop() {
+        simulateTransportDrop("tcp")
     }
 
     private fun sendPayloadMessage(content: String) {
