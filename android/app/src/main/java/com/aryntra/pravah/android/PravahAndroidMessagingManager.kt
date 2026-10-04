@@ -162,11 +162,7 @@ class PravahAndroidMessagingManager(
 
     fun connectToTcp(remoteHost: String, remotePort: Int, remotePeerId: PeerId? = null): String {
         tcpTransport.connect(remoteHost, remotePort)
-        val connId = "$remoteHost:$remotePort"
-        if (remotePeerId != null) {
-            presenceBridge.handlePeerConnected(remotePeerId, connId)
-        }
-        return connId
+        return "$remoteHost:$remotePort"
     }
 
     fun connectTo(remoteHost: String, remotePort: Int) {
@@ -178,7 +174,6 @@ class PravahAndroidMessagingManager(
         val cleanMac = remoteMac.removePrefix("bt:").trim().uppercase()
         val connId = "bt:$cleanMac"
         if (remotePeerId != null) {
-            presenceBridge.handlePeerConnected(remotePeerId, connId)
             try {
                 sendJoin(remotePeerId, connId)
             } catch (e: Exception) {
@@ -191,7 +186,6 @@ class PravahAndroidMessagingManager(
     fun sendJoin(remotePeerId: PeerId, connectionId: String) {
         val cleanConn = cleanConnId(connectionId)
         registry.register(remotePeerId, cleanConn)
-        presenceBridge.handlePeerConnected(remotePeerId, cleanConn)
         val joinMsg = Message(
             MessageType.JOIN, localPeerId.value(),
             "join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
