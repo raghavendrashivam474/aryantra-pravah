@@ -1,55 +1,201 @@
-﻿package com.aryntra.pravah.android.state
+package com.aryntra.pravah.android.state
 
 import com.aryntra.pravah.android.PravahAndroidMessagingManager
+import com.aryntra.pravah.android.presentation.NetworkSnapshotPanel
+import com.aryntra.pravah.android.presentation.PathPanel
+import com.aryntra.pravah.connectivity.ConnectivityPath
+import com.aryntra.pravah.connectivity.EndpointAddress
+import com.aryntra.pravah.connectivity.PathId
 import com.aryntra.pravah.peer.PeerId
+import com.aryntra.pravah.transport.Transport
+import com.aryntra.pravah.transport.TransportListener
 import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 /**
- * JUnit 5 unit tests verifying Diagnostic UI presentation mapping (§23).
+ * A.D2 Test Suite — Unit tests verifying live network state models,
+ * topology mapping, PathState transitions, and B.R2 buffer observability (§28).
  */
 class DiagnosticModelMapperTest {
 
-    @Test
-    fun testIdleStateMapping() {
-        val testPeerId = PeerId.of("android-test-node")
-        val manager = PravahAndroidMessagingManager(testPeerId)
+    private lateinit var manager: PravahAndroidMessagingManager
+    private val localPeerId = PeerId.of("android-test-local")
+    private val remotePeerId = PeerId.of("android-test-remote")
 
-        val state = DiagnosticModelMapper.map(manager, null)
+    // Stateful dummy transport to simulate lifecycle correctly
+    private val dummyTransport = object : Transport {
+        var running: Boolean = false
+        override fun getName(): String = "dummy"
+        override fun start() { running = true }
+        override fun stop() { running = false }
+        override fun isRunning(): Boolean = running
+        override fun send(destinationId: String, payload: ByteArray) {}
+        override fun setListener(listener: TransportListener?) {}
+    }
 
-        assertNotNull(state)
-        assertEquals("android-test-node", state.nodeStatus.localPeerId)
-        assertFalse(state.nodeStatus.isRunning)
-        assertFalse(state.nodeStatus.discoveryActive)
-        assertEquals("-", state.nodeStatus.tcpPortStr)
-        assertEquals("NONE", state.nodeStatus.connectedPeerId)
-        assertEquals("-", state.nodeStatus.sessionState)
-
-        // Operations Panel state checks (§13)
-        assertTrue(state.operations.startEnabled)
-        assertFalse(state.operations.stopEnabled)
-        assertFalse(state.operations.discoveryEnabled)
-        assertFalse(state.operations.connectTcpEnabled)
-        assertFalse(state.operations.connectBtEnabled)
-        assertFalse(state.operations.simulateDropEnabled)
-        assertFalse(state.operations.sendEnabled)
-
-        // Snapshot verification (§9)
-        assertEquals(0, state.snapshot.peersCount)
-        assertEquals(0, state.snapshot.activePathsCount)
+    @BeforeEach
+    fun setUp() {
+        dummyTransport.running = false
+        manager = PravahAndroidMessagingManager(
+            localPeerId = localPeerId,
+            customTransport = dummyTransport
+        )
     }
 
     @Test
-    fun testConnectedPeerContextMapping() {
-        val testPeerId = PeerId.of("android-test-node")
-        val targetPeerId = PeerId.of("android-remote-peer")
-        val manager = PravahAndroidMessagingManager(testPeerId)
-
-        val state = DiagnosticModelMapper.map(manager, targetPeerId)
+    fun testInitialStoppedStateMapping() {
+        val state = DiagnosticModelMapper.map(manager, null)
 
         assertNotNull(state)
-        assertEquals("android-test-node", state.nodeStatus.localPeerId)
-        assertEquals("android-remote-peer", state.nodeStatus.connectedPeerId)
-        assertEquals("JOINED", state.nodeStatus.sessionState)
+        assertEquals("android-test-local", state.nodeStatus.localPeerId)
+        assertEquals("NONE", state.nodeStatus.connectedPeerId)
+        assertEquals(0, state.snapshot.peersCount)
+        assertEquals(0, state.snapshot.activePathsCount)
+        assertEquals(0, state.peers.size)
+        assertEquals(0, state.paths.size)
+        assertTrue(state.operations.startEnabled)
+        assertFalse(state.operations.stopEnabled)
+        assertFalse(state.operations.sendEnabled)
+
+        // A.D2 assertions
+        assertNotNull(state.topology)
+        assertEquals("LOCAL", state.topology.localNode.id)
+        assertEquals(0, state.topology.peers.size)
+        assertEquals(0, state.topology.edges.size)
+        assertEquals(0L, state.bufferState.totalBuffered)
+    }
+
+    @Test
+    fun testLiveTopologyAndPathStateMapping() {
+        val tcpPathId = PathId.of("tcp-p1")
+        val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
+        val activeTcp = ConnectivityPath.active(tcpPathId, remotePeerId, "tcp", tcpEndpoint, "tcp-conn-101")
+        manager.connectivityRegistry.registerPath(remotePeerId, activeTcp)
+
+        val btPathId = PathId.of("bt-p2")
+        val btEndpoint = EndpointAddress.of("bluetooth", "00:11:22:33:44:55", 1)
+        val candidateBt = ConnectivityPath.candidate(btPathId, remotePeerId, "bluetooth", btEndpoint)
+        manager.connectivityRegistry.registerPath(remotePeerId, candidateBt)
+
+        val state = DiagnosticModelMapper.map(manager, remotePeerId)
+
+        assertEquals(1, state.snapshot.peersCount)
+        assertEquals(1, state.snapshot.activePathsCount)
+
+        assertEquals(1, state.peers.size)
+        assertEquals("android-test-remote", state.peers[0].peerId)
+
+        assertEquals(2, state.paths.size)
+        val tcpMapped = state.paths.first { it.transportType == "TCP" }
+        val btMapped = state.paths.first { it.transportType == "BLUETOOTH" }
+
+        assertEquals("ACTIVE", tcpMapped.pathState)
+        assertTrue(tcpMapped.isActive)
+        assertEquals("tcp-conn-101", tcpMapped.connectionId)
+
+        assertEquals("CANDIDATE", btMapped.pathState)
+        assertFalse(btMapped.isActive)
+
+        assertEquals(1, state.topology.peers.size)
+        assertEquals(2, state.topology.edges.size)
+
+        val tcpEdge = state.topology.edges.first { it.transportType == "TCP" }
+        val btEdge = state.topology.edges.first { it.transportType == "BLUETOOTH" }
+
+        assertEquals("ACTIVE", tcpEdge.pathState)
+        assertEquals("CANDIDATE", btEdge.pathState)
+    }
+
+    @Test
+    fun testSelectedRouteIndication() {
+        val tcpPathId = PathId.of("tcp-p1")
+        val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
+        val activeTcp = ConnectivityPath.active(tcpPathId, remotePeerId, "tcp", tcpEndpoint, "tcp-conn-101")
+        manager.connectivityRegistry.registerPath(remotePeerId, activeTcp)
+
+        val state = DiagnosticModelMapper.map(manager, remotePeerId)
+        val tcpMapped = state.paths.first { it.transportType == "TCP" }
+
+        assertTrue(tcpMapped.isSelected)
+        assertTrue(state.topology.edges.first { it.transportType == "TCP" }.isSelected)
+    }
+
+    @Test
+    fun testLiveWireEventPassing() {
+        val events = listOf(
+            LiveWireEvent("10:00:00", "SYSTEM", "SYSTEM", "Node start"),
+            LiveWireEvent("10:00:01", "TX", "TX", "SENT: Hello"),
+            LiveWireEvent("10:00:02", "RX", "RX", "RECV: World")
+        )
+
+        val state = DiagnosticModelMapper.map(manager, remotePeerId, events)
+        assertEquals(3, state.liveWireEvents.size)
+        assertEquals("10:00:01", state.liveWireEvents[1].timestamp)
+        assertEquals("TX", state.liveWireEvents[1].eventType)
+        assertEquals("SENT: Hello", state.liveWireEvents[1].detail)
+    }
+
+    @Test
+    fun testAsciiTopologyRenderer() {
+        val panel = NetworkSnapshotPanel()
+        val topo = TopologyState(
+            localNode = TopologyNode("LOCAL", "android-local"),
+            peers = listOf(TopologyNode("remote-1", "peer-b")),
+            edges = listOf(
+                TopologyEdge("LOCAL", "remote-1", "TCP", "ACTIVE", isSelected = true),
+                TopologyEdge("LOCAL", "remote-1", "BLUETOOTH", "CANDIDATE", isSelected = false)
+            )
+        )
+
+        val ascii = panel.renderAsciiTopology(topo)
+        assertNotNull(ascii)
+        assertTrue(ascii.contains("LIVE NETWORK TOPOLOGY"))
+        assertTrue(ascii.contains("PEER: peer-b"))
+        assertTrue(ascii.contains("TCP"))
+        assertTrue(ascii.contains("ACTIVE"))
+        assertTrue(ascii.contains("SELECTED"))
+        assertTrue(ascii.contains("BLUETOOTH"))
+        assertTrue(ascii.contains("CANDIDATE"))
+    }
+
+    @Test
+    fun testPathPanelFormatting() {
+        val panel = PathPanel()
+
+        val activePath = PathItemState(
+            peerId = "peer-1",
+            transportType = "TCP",
+            isActive = true,
+            connectionId = "192.168.1.50:5000",
+            pathState = "ACTIVE",
+            isSelected = true
+        )
+        val formattedActive = panel.formatPath(activePath)
+        assertTrue(formattedActive.contains("● ACTIVE"))
+        assertTrue(formattedActive.contains("[SELECTED ROUTE]"))
+
+        val candidatePath = PathItemState(
+            peerId = "peer-1",
+            transportType = "BLUETOOTH",
+            isActive = false,
+            connectionId = "no-conn",
+            pathState = "CANDIDATE",
+            isSelected = false
+        )
+        val formattedCandidate = panel.formatPath(candidatePath)
+        assertTrue(formattedCandidate.contains("◐ CANDIDATE"))
+        assertFalse(formattedCandidate.contains("[SELECTED ROUTE]"))
+
+        val inactivePath = PathItemState(
+            peerId = "peer-1",
+            transportType = "TCP",
+            isActive = false,
+            connectionId = "no-conn",
+            pathState = "INACTIVE",
+            isSelected = false
+        )
+        val formattedInactive = panel.formatPath(inactivePath)
+        assertTrue(formattedInactive.contains("○ INACTIVE"))
     }
 }
