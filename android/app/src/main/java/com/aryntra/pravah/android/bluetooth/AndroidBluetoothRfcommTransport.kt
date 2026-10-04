@@ -1,4 +1,4 @@
-package com.aryntra.pravah.android.bluetooth
+﻿package com.aryntra.pravah.android.bluetooth
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
@@ -150,20 +150,33 @@ class AndroidBluetoothRfcommTransport(
 
         val adapter = try { adapterProvider() } catch (t: Throwable) { null }
             ?: throw IllegalStateException("BluetoothAdapter is unavailable")
+        LOGGER.info("[BT-FORENSIC] BT-01: Adapter available") // BT-FORENSIC
         if (!adapter.isEnabled) {
             throw IllegalStateException("Bluetooth is turned off")
         }
+        LOGGER.info("[BT-FORENSIC] BT-02: Adapter enabled") // BT-FORENSIC
 
         val device: BluetoothDevice = adapter.getRemoteDevice(cleanMac)
+        LOGGER.info("[BT-FORENSIC] BT-03: Device resolved addr=${device.address} name=${device.name}") // BT-FORENSIC
+        LOGGER.info("[BT-FORENSIC] BT-04: Bond state=${device.bondState} (10=NONE,11=BONDING,12=BONDED)") // BT-FORENSIC
         val socket: BluetoothSocket = device.createRfcommSocketToServiceRecord(serviceUuid)
+        LOGGER.info("[BT-FORENSIC] BT-05: Socket created UUID=$serviceUuid") // BT-FORENSIC
 
         try {
             if (adapter.isDiscovering) {
                 adapter.cancelDiscovery()
             }
         } catch (ignored: Exception) {}
-
-        socket.connect()
+        LOGGER.info("[BT-FORENSIC] BT-06: Discovery cancelled") // BT-FORENSIC
+        LOGGER.info("[BT-FORENSIC] BT-07: socket.connect() starting to $cleanMac ...") // BT-FORENSIC
+        try { // BT-FORENSIC
+            socket.connect()
+            LOGGER.info("[BT-FORENSIC] BT-08: socket.connect() SUCCEEDED") // BT-FORENSIC
+        } catch (connectEx: IOException) { // BT-FORENSIC
+            LOGGER.info("[BT-FORENSIC] BT-08: socket.connect() FAILED class=${connectEx.javaClass.simpleName} msg=${connectEx.message}") // BT-FORENSIC
+            try { socket.close() } catch (_: Exception) {} // BT-FORENSIC cleanup
+            throw connectEx // BT-FORENSIC re-throw to preserve original behavior
+        } // BT-FORENSIC
         attachActiveSocket(connId, socket)
     }
 
@@ -205,6 +218,8 @@ class AndroidBluetoothRfcommTransport(
     }
 
     private fun attachActiveSocket(connectionId: String, socket: BluetoothSocket) {
+        LOGGER.info("[BT-FORENSIC] BT-09: InputStream opened for $connectionId") // BT-FORENSIC
+        LOGGER.info("[BT-FORENSIC] BT-10: OutputStream opened for $connectionId") // BT-FORENSIC
         val link = BluetoothStreamLink(
             id = connectionId,
             socket = socket,
@@ -216,6 +231,7 @@ class AndroidBluetoothRfcommTransport(
 
         activeConnections[connectionId] = link
         link.startReader()
+        LOGGER.info("[BT-FORENSIC] BT-11: Reader started for $connectionId") // BT-FORENSIC
         notifyConnectionOpened(connectionId)
     }
 
@@ -252,9 +268,11 @@ class AndroidBluetoothRfcommTransport(
                             val data = buffer.copyOf(bytesRead)
                             onDataReceived(data)
                         } else if (bytesRead < 0) {
+                            java.util.logging.Logger.getLogger("BT-FORENSIC").info("[BT-FORENSIC] BT-12: Reader EOF bytesRead=$bytesRead id=$id") // BT-FORENSIC
                             break
                         }
                     } catch (e: IOException) {
+                        java.util.logging.Logger.getLogger("BT-FORENSIC").info("[BT-FORENSIC] BT-12: Reader IOException class=${e.javaClass.simpleName} msg=${e.message} id=$id") // BT-FORENSIC
                         break
                     }
                 }
