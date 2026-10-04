@@ -1,11 +1,9 @@
-﻿package com.aryntra.pravah.android
+package com.aryntra.pravah.android
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.app.AlertDialog
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -19,15 +17,21 @@ import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.aryntra.pravah.android.presentation.*
 import com.aryntra.pravah.android.state.DiagnosticModelMapper
+import com.aryntra.pravah.android.state.LiveWireEvent
+import com.aryntra.pravah.connectivity.PathStateListener
 import com.aryntra.pravah.messaging.ApplicationMessageListener
 import com.aryntra.pravah.peer.PeerId
-import java.util.UUID
+import com.aryntra.pravah.protocol.Message
+import com.aryntra.pravah.protocol.ProtocolListener
+import java.text.SimpleDateFormat
+import java.util.*
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 
 /**
- * Modernized Diagnostic UI Entry Point (§2, §28).
- * Retains 100% of validated network core interactions while delegating rendering 
- * to decoupled presentation panels and clean mapping states.
+ * A.D2 — Live Event-Driven Network Cockpit.
+ * Subscribes to real-time events from core engines using official boundaries.
+ * Keeps thread boundaries strictly intact: background execution -> main thread ui.
  */
 class DiagnosticActivity : Activity() {
 
@@ -36,6 +40,8 @@ class DiagnosticActivity : Activity() {
     private val backgroundExecutor = Executors.newSingleThreadExecutor()
 
     private var connectedPeerId: PeerId? = null
+    private val liveEventsList = CopyOnWriteArrayList<LiveWireEvent>()
+    private val timeFormatter = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     // Component Panels (§14)
     private lateinit var nodeStatusPanel: NodeStatusPanel
@@ -76,7 +82,7 @@ class DiagnosticActivity : Activity() {
         pathPanel = PathPanel()
         liveWirePanel = LiveWirePanel(scrollLog, tvLog)
         operationsPanel = OperationsPanel(
-            btnStart, btnStop, btnDiscover, btnConnectTcp, 
+            btnStart, btnStop, btnDiscover, btnConnectTcp,
             btnConnectBt, btnSimulateDrop, etMessage, btnSend
         )
 
@@ -85,34 +91,75 @@ class DiagnosticActivity : Activity() {
         val peerId = PeerId.of("android-$shortId")
         manager = PravahAndroidMessagingManager(peerId)
 
-        log("Pravah Hybrid Diagnostic Node initialized")
-        log("PeerId: ${peerId.value()}")
+        addSystemEvent("Pravah Hybrid Diagnostic Node initialized. PeerId: ${peerId.value()}")
         updateDashboard()
 
         // 4. Operations click bindings
         btnStart.setOnClickListener { startRuntime() }
         btnStop.setOnClickListener { stopRuntime() }
-        btnDiscover.setOnClickListener { toggleDiscovery() }
-        btnConnectTcp.setOnClickListener { connectTcp() }
+        btnDiscover.setOnClickListener {
+            if (manager.isDiscovering) stopDiscovery() else startDiscovery()
+        }
+        btnConnectTcp.setOnClickListener {
+            val disc = manager.discoveredPeers.firstOrNull()
+            if (disc != null) connectTcp(disc.hostAddress(), disc.port(), disc.peerId())
+            else addErrorEvent("No discovered peers to connect TCP")
+        }
         btnConnectBt.setOnClickListener { showBluetoothDeviceChooser() }
         btnSimulateDrop.setOnClickListener { simulateTcpDrop() }
-        btnSend.setOnClickListener { sendMessage() }
+        btnSend.setOnClickListener {
+            val content = etMessage.text.toString()
+            if (content.isNotEmpty()) {
+                sendPayloadMessage(content)
+                etMessage.setText("")
+            }
+        }
 
-        // 5. Setup unchanged messaging callbacks
+        // 5. Setup Live Path State Transitions Listener (B.R2 / A.D2 Event Boundary)
+        manager.connectivityRegistry.addPathStateListener(PathStateListener { _, path, prev ->
+            postEvent("PATH", "${path.transportName()} transitioned from $prev to ${path.state()}")
+            val tb = manager.router.transitionBuffer()
+            if (tb != null && tb.size() > 0) {
+                postEvent("BUFFER", "Transition buffer holding ${tb.size()} messages (${tb.currentBytes()} bytes)")
+            }
+        })
+
+        // 6. Setup Protocol Engine Listeners (Live Wire Messaging Events)
+        manager.coordinator.setProtocolListener(object : ProtocolListener {
+            override fun onPeerJoined(peerIdStr: String, message: Message) {
+                postEvent("JOIN", "Peer $peerIdStr joined the session")
+                handler.post { bindSession(PeerId.of(peerIdStr)) }
+            }
+
+            override fun onMessageReceived(peerIdStr: String, message: Message) {
+                postEvent("RX", "RECV [${peerIdStr.take(12)}]: ${message.messageId()}")
+            }
+
+            override fun onPeerLeft(peerIdStr: String, message: Message) {
+                postEvent("LEFT", "Peer $peerIdStr left the session")
+                handler.post {
+                    if (connectedPeerId?.value() == peerIdStr) {
+                        connectedPeerId = null
+                        updateDashboard()
+                    }
+                }
+            }
+        })
+
+        // 7. Setup Application payload listener for terminal
         manager.addMessageListener(ApplicationMessageListener { msg ->
             handler.post {
                 val sender = msg.sender()
                 bindSession(sender)
-                log("< RECV [${sender.value()}]: ${msg.content()}")
                 updateDashboard()
             }
         })
 
+        // 8. Setup peer discovery listener
         manager.setDiscoveryListener { peer ->
             handler.post {
                 bindSession(peer.peerId())
-                log("DISCOVERED: ${peer.peerId().value()} @ ${peer.hostAddress()}:${peer.port()}")
-                updateDashboard()
+                postEvent("SYSTEM", "DISCOVERED: ${peer.peerId().value()} @ ${peer.hostAddress()}:${peer.port()}")
             }
         }
     }
@@ -126,13 +173,9 @@ class DiagnosticActivity : Activity() {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
                 permissions.add(Manifest.permission.BLUETOOTH_SCAN)
             }
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.BLUETOOTH_ADVERTISE)
-            }
-        } else {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
-            }
+        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            permissions.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
         if (permissions.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, permissions.toTypedArray(), 101)
@@ -144,17 +187,81 @@ class DiagnosticActivity : Activity() {
         updateDashboard()
     }
 
+    private fun postEvent(type: String, detail: String) {
+        val timestamp = timeFormatter.format(Date())
+        val event = LiveWireEvent(timestamp, direction = type, eventType = type, detail = detail)
+        liveEventsList.add(event)
+        
+        while (liveEventsList.size > 100) {
+            liveEventsList.removeAt(0)
+        }
+
+        handler.post {
+            liveWirePanel.appendEvent(event)
+            updateDashboard()
+        }
+    }
+
+    private fun addSystemEvent(msg: String) {
+        postEvent("SYSTEM", msg)
+    }
+
+    private fun addErrorEvent(msg: String) {
+        postEvent("ERROR", msg)
+    }
+
+    private fun updateDashboard() {
+        // 1. Build immutable UI state from Core & Manager State
+        val uiState = DiagnosticModelMapper.map(manager, connectedPeerId, liveEventsList.toList())
+
+        // 2. Render Node Status Section
+        nodeStatusPanel.render(uiState.nodeStatus)
+
+        // 3. Render Button/Interactive Control States
+        operationsPanel.render(uiState.operations)
+
+        // 4. Construct Multi-path topology representation dynamically
+        val topoSb = StringBuilder()
+
+        // Render real live network topology
+        topoSb.append(networkSnapshotPanel.renderAsciiTopology(uiState.topology))
+
+        // Render text layout representation of details for paths
+        topoSb.append("\n── PATH CONNECTIONS ──\n")
+        if (uiState.peers.isNotEmpty()) {
+            for (peer in uiState.peers) {
+                topoSb.append(peerPanel.formatPeerHeader(peer))
+
+                val associatedPaths = uiState.paths.filter { it.peerId == peer.peerId }
+                for (path in associatedPaths) {
+                    topoSb.append(pathPanel.formatPath(path))
+                }
+                topoSb.append(pathPanel.formatDispatchRoute(peer.resolvedRoute))
+            }
+        } else {
+            topoSb.append(" [No connected peer registrations]\n")
+        }
+
+        // Render B.R2 Transition Buffer metrics (§18)
+        topoSb.append("\n── TRANSITION BUFFER (B.R2) ──\n")
+        val bs = uiState.bufferState
+        topoSb.append(String.format(" Queue Size: %-5d | Payload Bytes: %-5d\n", bs.currentSize, bs.currentBytes))
+        topoSb.append(String.format(" Tx Buffered: %-4d | Tx Flushed: %-4d\n", bs.totalBuffered, bs.totalFlushed))
+        topoSb.append(String.format(" Expired: %-7d | Evicted: %-7d | Rejected: %d\n", bs.totalExpired, bs.totalEvicted, bs.totalRejected))
+
+        tvMultiPathTopology.text = topoSb.toString()
+    }
+
     private fun startRuntime() {
         backgroundExecutor.execute {
             try {
                 manager.start()
                 handler.post {
-                    log("Runtime STARTED on TCP port ${manager.boundPort}")
-                    updateDashboard()
+                    addSystemEvent("Runtime STARTED on TCP port ${manager.boundPort}")
                 }
             } catch (e: Exception) {
                 val err = e.message ?: e.javaClass.simpleName
-                handler.post { log("ERROR starting: $err") }
+                handler.post { addErrorEvent("Starting Error: $err") }
             }
         }
     }
@@ -164,111 +271,96 @@ class DiagnosticActivity : Activity() {
             try {
                 manager.stop()
                 handler.post {
-                    log("Runtime STOPPED")
-                    connectedPeerId = null
+                    addSystemEvent("Runtime STOPPED")
                     updateDashboard()
                 }
             } catch (e: Exception) {
                 val err = e.message ?: e.javaClass.simpleName
-                handler.post { log("ERROR stopping: $err") }
+                handler.post { addErrorEvent("Stopping Error: $err") }
             }
         }
     }
 
-    private fun toggleDiscovery() {
-        backgroundExecutor.execute {
-            if (manager.isDiscovering) {
-                manager.stopDiscovery()
-                handler.post {
-                    log("Discovery STOPPED")
-                    updateDashboard()
-                }
-            } else {
-                manager.startDiscovery()
-                handler.post {
-                    log("Discovery STARTED on UDP ${manager.discoveryPort}")
-                    updateDashboard()
-                }
-            }
-        }
-    }
-
-    private fun connectTcp() {
-        val peers = manager.discoveredPeers
-        if (peers.isEmpty()) {
-            log("No peers discovered yet via UDP. Please press DISCOVER first.")
-            return
-        }
-
-        val target = peers.last()
-        val host = target.hostAddress()
-        val port = target.port()
-        val targetPeerId = target.peerId()
-
-        log("Connecting TCP to ${targetPeerId.value()} @ $host:$port...")
+    private fun startDiscovery() {
         backgroundExecutor.execute {
             try {
+                manager.startDiscovery()
+                handler.post {
+                    addSystemEvent("UDP Discovery STARTED (Port: ${manager.discoveryPort})")
+                }
+            } catch (e: Exception) {
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { addErrorEvent("Discovery start error: $err") }
+            }
+        }
+    }
+
+    private fun stopDiscovery() {
+        backgroundExecutor.execute {
+            try {
+                manager.stopDiscovery()
+                handler.post {
+                    addSystemEvent("UDP Discovery STOPPED")
+                }
+            } catch (e: Exception) {
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { addErrorEvent("Discovery stop error: $err") }
+            }
+        }
+    }
+
+    private fun connectTcp(host: String, port: Int, targetPeerId: PeerId) {
+        backgroundExecutor.execute {
+            try {
+                handler.post { addSystemEvent("Connecting TCP to ${targetPeerId.value()}...") }
                 val connId = manager.connectToTcp(host, port, targetPeerId)
-                Thread.sleep(150)
+                handler.post {
+                    addSystemEvent("TCP socket active: $connId")
+                }
+                Thread.sleep(200)
                 manager.sendJoin(targetPeerId, connId)
                 handler.post {
-                    log("TCP JOIN sent to ${targetPeerId.value()}")
+                    addSystemEvent("TCP JOIN sent to ${targetPeerId.value()}")
                     bindSession(targetPeerId)
-                    updateDashboard()
                 }
                 Thread.sleep(200)
                 manager.replyJoin(targetPeerId)
             } catch (e: Exception) {
                 val err = e.message ?: e.javaClass.simpleName
-                handler.post { log("TCP CONNECT ERROR: $err") }
+                handler.post { addErrorEvent("TCP CONNECT ERROR: $err") }
             }
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun showBluetoothDeviceChooser() {
+        @Suppress("DEPRECATION")
         val adapter = try { BluetoothAdapter.getDefaultAdapter() } catch (t: Throwable) { null }
         if (adapter == null || !adapter.isEnabled) {
-            log("Bluetooth is turned OFF or unavailable on this device")
+            addErrorEvent("Bluetooth adapter is unavailable or disabled")
             return
         }
 
-        val bondedDevices: Set<BluetoothDevice> = try { adapter.bondedDevices ?: emptySet() } catch (e: Exception) { emptySet() }
-        val deviceList = bondedDevices.toList()
-
-        if (deviceList.isEmpty()) {
-            log("No paired Bluetooth devices found. Please pair both Android devices in Bluetooth Settings first.")
+        val bondedDevices = adapter.bondedDevices.toList()
+        if (bondedDevices.isEmpty()) {
+            addErrorEvent("No paired Bluetooth devices found")
             return
         }
 
-        val names = deviceList.map { "${it.name ?: "Unknown"} (${it.address})" }.toTypedArray()
+        val device = bondedDevices.firstOrNull { it.name.lowercase().contains("android") } ?: bondedDevices.first()
+        val targetPeerId = PeerId.of("remote-bt-node")
 
-        AlertDialog.Builder(this)
-            .setTitle("Select Paired Bluetooth Peer")
-            .setItems(names) { _, which ->
-                val selectedDevice = deviceList[which]
-                connectBtDevice(selectedDevice.address)
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun connectBtDevice(macAddress: String) {
-        val peers = manager.discoveredPeers
-        val targetPeerId = connectedPeerId ?: if (peers.isNotEmpty()) peers.last().peerId() else PeerId.of("remote-bt-node")
-
-        log("Connecting Bluetooth RFCOMM to $macAddress for ${targetPeerId.value()}...")
         backgroundExecutor.execute {
             try {
-                val connId = manager.connectToBluetooth(macAddress, targetPeerId)
+                handler.post { addSystemEvent("Connecting Bluetooth to paired device: ${device.name} [${device.address}]") }
+                val connId = manager.connectToBluetooth(device.address, targetPeerId)
                 handler.post {
-                    log("Bluetooth path established: $connId")
+                    addSystemEvent("Bluetooth channel active: $connId")
                     bindSession(targetPeerId)
-                    updateDashboard()
                 }
             } catch (e: Exception) {
                 val err = e.message ?: e.javaClass.simpleName
-                handler.post { log("BT CONNECT NOTICE: $err") }
+                handler.post { addErrorEvent("BT CONNECT ERROR: $err") }
             }
         }
     }
@@ -282,99 +374,32 @@ class DiagnosticActivity : Activity() {
                         if (path.transportName().equals("tcp", ignoreCase = true)) {
                             conn.addPath(path.deactivate())
                             handler.post {
-                                log("SIMULATED TCP FAILURE: Path ${path.pathId().value()} DEACTIVATED")
+                                addSystemEvent("SIMULATED TCP FAILURE: Path ${path.pathId().value()} DEACTIVATED")
                                 updateDashboard()
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                handler.post { log("DROP ERROR: ${e.message}") }
+                val err = e.message ?: e.javaClass.simpleName
+                handler.post { addErrorEvent("DROP ERROR: $err") }
             }
         }
     }
 
-    private fun sendMessage() {
-        val text = etMessage.text.toString().trim()
-        val peer = connectedPeerId
-        if (text.isEmpty() || peer == null) return
-
+    private fun sendPayloadMessage(content: String) {
+        val destination = connectedPeerId ?: return
         backgroundExecutor.execute {
             try {
-                val activeConn = try { manager.router.resolveConnectionId(peer) } catch (e: Exception) { "unresolved" }
-                val msg = manager.sendText(peer, text)
+                manager.sendText(destination, content)
                 handler.post {
-                    log("> SENT via [$activeConn]: $text")
-                    etMessage.setText("")
-                    updateDashboard()
-                }
-                var delivered = false
-                for (i in 1..15) {
-                    Thread.sleep(200)
-                    if (manager.isDelivered(msg.messageId())) {
-                        delivered = true
-                        break
-                    }
-                }
-                handler.post {
-                    if (delivered) {
-                        log("ACK received -> DELIVERED")
-                    } else {
-                        log("Dispatched to router -> Pending ACK")
-                    }
+                    postEvent("TX", "SENT [${destination.value().take(12)}]: $content")
                 }
             } catch (e: Exception) {
                 val err = e.message ?: e.javaClass.simpleName
-                handler.post { log("SEND ERROR: $err") }
+                handler.post { addErrorEvent("SEND ERROR: $err") }
             }
         }
-    }
-
-    /**
-     * Reorganized updateDashboard implementation (§7, §14, §15).
-     * Compiles manager state, requests standard mapping models, and delegates
-     * styling outputs across component panel domains.
-     */
-    private fun updateDashboard() {
-        // 1. Build immutable UI state from Core & Manager State
-        val uiState = DiagnosticModelMapper.map(manager, connectedPeerId)
-
-        // 2. Render Node Status Section
-        nodeStatusPanel.render(uiState.nodeStatus)
-
-        // 3. Render Button/Interactive Control States
-        operationsPanel.render(uiState.operations)
-
-        // 4. Construct Multi-path topology representation dynamically
-        val topoSb = StringBuilder()
-
-        // Network snapshot summary header (§9)
-        topoSb.append("--- NETWORK SNAPSHOT ---\n")
-        topoSb.append(networkSnapshotPanel.formatTelemetry(uiState.snapshot)).append("\n\n")
-
-        if (uiState.peers.isNotEmpty()) {
-            for (peer in uiState.peers) {
-                // Formatting peer details (§10)
-                topoSb.append(peerPanel.formatPeerHeader(peer))
-
-                // Group associated sub-paths (§11)
-                val associatedPaths = uiState.paths.filter { it.peerId == peer.peerId }
-                for (path in associatedPaths) {
-                    topoSb.append(pathPanel.formatPath(path))
-                }
-
-                // Dispatch line resolution
-                topoSb.append(pathPanel.formatDispatchRoute(peer.resolvedRoute))
-            }
-        } else {
-            topoSb.append("No active peer paths.")
-        }
-
-        tvMultiPathTopology.text = topoSb.toString().trim()
-    }
-
-    private fun log(msg: String) {
-        liveWirePanel.log(msg)
     }
 
     override fun onDestroy() {
