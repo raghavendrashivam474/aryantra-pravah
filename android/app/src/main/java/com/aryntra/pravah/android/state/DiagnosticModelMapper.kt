@@ -50,12 +50,16 @@ object DiagnosticModelMapper {
         for (conn in allConnectivities) {
             val peerIdVal = conn.peerId().value()
 
-            // Issue E: Resolve active dispatch route from router
-            val resolvedRoute = try {
-                val rawSelected = manager.router.resolveConnectionId(conn.peerId())
-                val selected = if (rawSelected != null && rawSelected.startsWith("/")) rawSelected.substring(1) else rawSelected
-                if (selected != null && selected.isNotEmpty()) selected else "NONE"
-            } catch (_: Exception) {
+            // Issue E: Resolve active dispatch route from router (A.D2.6: strictly guard on hasActivePath)
+            val resolvedRoute = if (conn.hasActivePath()) {
+                try {
+                    val rawSelected = manager.router.resolveConnectionId(conn.peerId())
+                    val selected = if (rawSelected != null && rawSelected.startsWith("/")) rawSelected.substring(1) else rawSelected
+                    if (selected != null && selected.isNotEmpty()) selected else "NONE"
+                } catch (_: Exception) {
+                    "NONE"
+                }
+            } else {
                 "NONE"
             }
 

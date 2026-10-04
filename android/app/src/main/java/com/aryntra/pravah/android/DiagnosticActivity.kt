@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.android
+package com.aryntra.pravah.android
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -316,8 +316,6 @@ class DiagnosticActivity : Activity() {
                 Thread.sleep(200)
                 manager.sendJoin(targetPeerId, connId)
                 handler.post { addSystemEvent("TCP JOIN sent to ${targetPeerId.value()}"); bindSession(targetPeerId) }
-                Thread.sleep(200)
-                manager.replyJoin(targetPeerId)
             } catch (e: Exception) {
                 handler.post { addErrorEvent("TCP CONNECT ERROR: ${e.message}") }
             }
