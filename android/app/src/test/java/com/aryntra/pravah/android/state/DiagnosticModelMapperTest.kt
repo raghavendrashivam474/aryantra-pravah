@@ -14,8 +14,9 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 
 /**
- * A.D2 Test Suite — Unit tests verifying live network state models,
- * topology mapping, PathState transitions, and B.R2 buffer observability (§28).
+ * A.D2.1 Test Suite — Extended regression test coverage (§19).
+ * Covers stopped state, topology, PathState mapping, route resolution,
+ * duplicate path handling, and dispatch route fallback.
  */
 class DiagnosticModelMapperTest {
 
@@ -23,7 +24,6 @@ class DiagnosticModelMapperTest {
     private val localPeerId = PeerId.of("android-test-local")
     private val remotePeerId = PeerId.of("android-test-remote")
 
-    // Stateful dummy transport to simulate lifecycle correctly
     private val dummyTransport = object : Transport {
         var running: Boolean = false
         override fun getName(): String = "dummy"
@@ -58,7 +58,6 @@ class DiagnosticModelMapperTest {
         assertFalse(state.operations.stopEnabled)
         assertFalse(state.operations.sendEnabled)
 
-        // A.D2 assertions
         assertNotNull(state.topology)
         assertEquals("LOCAL", state.topology.localNode.id)
         assertEquals(0, state.topology.peers.size)
@@ -119,6 +118,44 @@ class DiagnosticModelMapperTest {
 
         assertTrue(tcpMapped.isSelected)
         assertTrue(state.topology.edges.first { it.transportType == "TCP" }.isSelected)
+    }
+
+    @Test
+    fun testDispatchRouteFallbackWhenNoActivePath() {
+        // Issue E: When only INACTIVE paths exist, dispatch route must be NONE
+        val tcpPathId = PathId.of("tcp-p1")
+        val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
+        val inactiveTcp = ConnectivityPath.inactive(tcpPathId, remotePeerId, "tcp", tcpEndpoint)
+        manager.connectivityRegistry.registerPath(remotePeerId, inactiveTcp)
+
+        val state = DiagnosticModelMapper.map(manager, remotePeerId)
+        assertEquals("NONE", state.peers[0].resolvedRoute)
+
+        val panel = PathPanel()
+        val routeStr = panel.formatDispatchRoute(state.peers[0].resolvedRoute)
+        assertTrue(routeStr.contains("NONE (No active path)"))
+    }
+
+    @Test
+    fun testDuplicatePathOrderingActiveFirst() {
+        // Issue C: When an active and inactive path coexist, active must sort first
+        val inactivePathId = PathId.of("tcp-p0")
+        val activePathId = PathId.of("tcp-p1")
+        val tcpEndpoint = EndpointAddress.tcp("192.168.1.100", 50001)
+
+        val inactiveTcp = ConnectivityPath.inactive(inactivePathId, remotePeerId, "tcp", tcpEndpoint)
+        val activeTcp = ConnectivityPath.active(activePathId, remotePeerId, "tcp", tcpEndpoint, "tcp-conn-101")
+
+        manager.connectivityRegistry.registerPath(remotePeerId, inactiveTcp)
+        manager.connectivityRegistry.registerPath(remotePeerId, activeTcp)
+
+        val state = DiagnosticModelMapper.map(manager, remotePeerId)
+        assertEquals(2, state.paths.size)
+        // First path in list must be the ACTIVE one
+        assertEquals("ACTIVE", state.paths[0].pathState)
+        assertTrue(state.paths[0].isSelected)
+        assertEquals("INACTIVE", state.paths[1].pathState)
+        assertFalse(state.paths[1].isSelected)
     }
 
     @Test
