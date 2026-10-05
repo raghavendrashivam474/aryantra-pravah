@@ -9,8 +9,10 @@ import java.util.UUID;
 
 /**
  * Domain model representing an application-level message.
- * Completely decoupled from transport, frames, and low-level protocol envelopes.
- * Integrates with ConversationId.
+ * Decoupled from transport, frames, and low-level protocol envelopes.
+ *
+ * <p>Includes optional application-level {@code sequenceNumber} for
+ * deterministic ordering across transport migration boundaries.</p>
  */
 public final class ApplicationMessage {
 
@@ -19,8 +21,14 @@ public final class ApplicationMessage {
     private final String content;
     private final Instant timestamp;
     private final ConversationId conversationId;
+    private final long sequenceNumber;
 
-    public ApplicationMessage(String messageId, PeerId sender, String content, Instant timestamp, ConversationId conversationId) {
+    public ApplicationMessage(String messageId,
+                              PeerId sender,
+                              String content,
+                              Instant timestamp,
+                              ConversationId conversationId,
+                              long sequenceNumber) {
         this.messageId = Objects.requireNonNull(messageId, "messageId must not be null");
         if (messageId.isBlank()) {
             throw new IllegalArgumentException("messageId must not be blank");
@@ -29,20 +37,45 @@ public final class ApplicationMessage {
         this.content = Objects.requireNonNull(content, "content must not be null");
         this.timestamp = Objects.requireNonNull(timestamp, "timestamp must not be null");
         this.conversationId = Objects.requireNonNull(conversationId, "conversationId must not be null");
+        this.sequenceNumber = sequenceNumber;
     }
 
-    public ApplicationMessage(String messageId, PeerId sender, String content, Instant timestamp) {
-        this(messageId, sender, content, timestamp, new ConversationId("direct:system:default"));
+    public ApplicationMessage(String messageId,
+                              PeerId sender,
+                              String content,
+                              Instant timestamp,
+                              ConversationId conversationId) {
+        this(messageId, sender, content, timestamp, conversationId, 0L);
+    }
+
+    public ApplicationMessage(String messageId,
+                              PeerId sender,
+                              String content,
+                              Instant timestamp) {
+        this(messageId, sender, content, timestamp, new ConversationId("direct:system:default"), 0L);
     }
 
     public static ApplicationMessage text(PeerId sender, String content, ConversationId conversationId) {
-        return new ApplicationMessage(UUID.randomUUID().toString(), sender, content, Instant.now(), conversationId);
+        return new ApplicationMessage(UUID.randomUUID().toString(), sender, content, Instant.now(), conversationId, 0L);
     }
 
-    public static ApplicationMessage fromPayload(String messageId, PeerId sender, byte[] payload, ConversationId conversationId) {
+    public static ApplicationMessage fromPayload(String messageId,
+                                                 PeerId sender,
+                                                 byte[] payload,
+                                                 ConversationId conversationId) {
         Objects.requireNonNull(payload, "payload must not be null");
         String text = new String(payload, StandardCharsets.UTF_8);
-        return new ApplicationMessage(messageId, sender, text, Instant.now(), conversationId);
+        return new ApplicationMessage(messageId, sender, text, Instant.now(), conversationId, 0L);
+    }
+
+    public static ApplicationMessage fromPayload(String messageId,
+                                                 PeerId sender,
+                                                 byte[] payload,
+                                                 ConversationId conversationId,
+                                                 long sequenceNumber) {
+        Objects.requireNonNull(payload, "payload must not be null");
+        String text = new String(payload, StandardCharsets.UTF_8);
+        return new ApplicationMessage(messageId, sender, text, Instant.now(), conversationId, sequenceNumber);
     }
 
     public static ApplicationMessage text(PeerId sender, String content) {
@@ -50,11 +83,11 @@ public final class ApplicationMessage {
     }
 
     public static ApplicationMessage text(String messageId, PeerId sender, String content) {
-        return new ApplicationMessage(messageId, sender, content, Instant.now(), new ConversationId("direct:system:default"));
+        return new ApplicationMessage(messageId, sender, content, Instant.now(), new ConversationId("direct:system:default"), 0L);
     }
 
     public static ApplicationMessage fromPayload(String messageId, PeerId sender, byte[] payload) {
-        return fromPayload(messageId, sender, payload, new ConversationId("direct:system:default"));
+        return fromPayload(messageId, sender, payload, new ConversationId("direct:system:default"), 0L);
     }
 
     public String messageId() {
@@ -77,6 +110,14 @@ public final class ApplicationMessage {
         return conversationId;
     }
 
+    public long sequenceNumber() {
+        return sequenceNumber;
+    }
+
+    public ApplicationMessage withSequence(long sequenceNumber) {
+        return new ApplicationMessage(messageId, sender, content, timestamp, conversationId, sequenceNumber);
+    }
+
     public byte[] toPayload() {
         return content.getBytes(StandardCharsets.UTF_8);
     }
@@ -86,9 +127,9 @@ public final class ApplicationMessage {
         if (this == o) return true;
         if (!(o instanceof ApplicationMessage that)) return false;
         return Objects.equals(messageId, that.messageId) &&
-               Objects.equals(sender, that.sender) &&
-               Objects.equals(content, that.content) &&
-               Objects.equals(conversationId, that.conversationId);
+                Objects.equals(sender, that.sender) &&
+                Objects.equals(content, that.content) &&
+                Objects.equals(conversationId, that.conversationId);
     }
 
     @Override
@@ -104,6 +145,7 @@ public final class ApplicationMessage {
                 ", content='" + content + '\'' +
                 ", timestamp=" + timestamp +
                 ", conversationId=" + conversationId +
+                ", sequenceNumber=" + sequenceNumber +
                 '}';
     }
 }
