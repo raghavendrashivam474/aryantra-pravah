@@ -95,7 +95,7 @@ class TcpDeliveryForensicInvestigationTest {
 
         // 1. App messaging service records the message state as SENT upon buffer acceptance
         MessageState state = messagingService.getMessageState(appMsg.messageId());
-        assertEquals(MessageState.SENT, state, "Application messaging service updates state to SENT upon router buffer acceptance");
+        assertEquals(MessageState.BUFFERED, state, "B.R3: Application messaging service accurately reflects BUFFERED state upon transition buffer capture");
 
         // 2. Mock transport received ZERO writes
         assertEquals(0, mockTransport.sentDestinations.size(), "Mock transport received 0 writes");
