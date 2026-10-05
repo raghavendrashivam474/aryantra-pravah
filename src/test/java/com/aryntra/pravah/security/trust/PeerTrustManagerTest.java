@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.security.trust;
+package com.aryntra.pravah.security.trust;
 
 import com.aryntra.pravah.peer.PeerId;
 import com.aryntra.pravah.security.authentication.AuthWireCodec;
@@ -28,7 +28,7 @@ class PeerTrustManagerTest {
     void setUp() {
         trustManager = new PeerTrustManager();
         peerId = PeerId.of("peer-alice-01");
-        keyPair = IdentityGenerator.generate();
+        keyPair = (new IdentityGenerator()).generate();
         identity = CryptographicIdentity.fromKeyPair(peerId, keyPair);
     }
 
@@ -106,7 +106,7 @@ class PeerTrustManagerTest {
         trustManager.issueChallengeForPeer(peerId);
 
         PeerId otherPeerId = PeerId.of("peer-eve-attacker");
-        IdentityKeyPair otherKeyPair = IdentityGenerator.generate();
+        IdentityKeyPair otherKeyPair = (new IdentityGenerator()).generate();
         CryptographicIdentity otherIdentity = CryptographicIdentity.fromKeyPair(otherPeerId, otherKeyPair);
         AuthenticationChallenge fakeChallenge = AuthenticationChallenge.generate();
         AuthenticationProof proof = AuthenticationProof.generate(fakeChallenge, otherIdentity, otherKeyPair, trustManager.authService().domain());

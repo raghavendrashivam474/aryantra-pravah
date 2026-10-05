@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.security.trust;
+package com.aryntra.pravah.security.trust;
 
 import com.aryntra.pravah.security.authentication.AuthenticationResult;
 import com.aryntra.pravah.security.identity.CryptographicIdentity;
