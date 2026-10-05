@@ -29,6 +29,12 @@ import com.aryntra.pravah.protocol.MessageEncoder
 import com.aryntra.pravah.protocol.MessageType
 import com.aryntra.pravah.protocol.PeerState
 import com.aryntra.pravah.protocol.ProtocolListener
+import com.aryntra.pravah.protocol.ProtocolSessionManager
+import com.aryntra.pravah.security.identity.CryptographicIdentity
+import com.aryntra.pravah.security.identity.IdentityGenerator
+import com.aryntra.pravah.security.identity.IdentityKeyPair
+import com.aryntra.pravah.security.trust.PeerTrustManager
+import com.aryntra.pravah.security.trust.TrustState
 import com.aryntra.pravah.transport.CompositeTransport
 import com.aryntra.pravah.transport.Transport
 import com.aryntra.pravah.transport.tcp.TcpTransport
@@ -47,6 +53,12 @@ class PravahAndroidMessagingManager(
 
     private val logger = Logger.getLogger(PravahAndroidMessagingManager::class.java.name)
 
+    // Security & Cryptographic Identity (SX.4)
+    val identityGenerator = IdentityGenerator()
+    val localKeyPair: IdentityKeyPair = identityGenerator.generate()
+    val localIdentity: CryptographicIdentity = CryptographicIdentity.fromKeyPair(localPeerId, localKeyPair)
+    val trustManager: PeerTrustManager = PeerTrustManager()
+
     val tcpTransport: TcpTransport = TcpTransport(host, port)
     val bluetoothTransport: AndroidBluetoothRfcommTransport = AndroidBluetoothRfcommTransport(localMacAddress)
     val compositeTransport: Transport = customTransport ?: CompositeTransport(tcpTransport, bluetoothTransport)
@@ -55,10 +67,19 @@ class PravahAndroidMessagingManager(
     val presenceManager = PeerPresenceManager(2000L)
     val connectivityRegistry = PeerConnectivityRegistry()
     val presenceBridge = PeerPresenceBridge(registry, presenceManager, connectivityRegistry)
+    val sessionManager = ProtocolSessionManager()
 
     val pathPolicy: PathSelectionPolicy = PathSelectionPolicy.preferSchemes("tcp", "bluetooth", "bt")
 
-    val coordinator = object : PeerConnectionCoordinator(compositeTransport, registry, presenceBridge) {
+    val coordinator = object : PeerConnectionCoordinator(
+        compositeTransport,
+        registry,
+        presenceBridge,
+        sessionManager,
+        trustManager,
+        localKeyPair,
+        localIdentity
+    ) {
         private val protocolListeners = java.util.concurrent.CopyOnWriteArrayList<ProtocolListener>()
 
         fun addProtocolListener(listener: ProtocolListener) {
@@ -78,11 +99,11 @@ class PravahAndroidMessagingManager(
             super.setProtocolListener(object : ProtocolListener {
                 override fun onPeerJoined(peerIdStr: String, message: Message) {
                     val remotePeer = PeerId.of(peerIdStr)
-
-                    // Clean up any orphaned temporary remote-bt-node entries (Legitimate migration)
                     cleanOrphanedBtNode(remotePeer)
 
-                    // Dispatch to all registered listeners (F1 Multi-cast)
+                    // Trust peer on verified JOIN
+                    trustPeer(remotePeer)
+
                     protocolListeners.forEach { it.onPeerJoined(peerIdStr, message) }
 
                     if (message != null && message.messageId().startsWith("join-")) {
@@ -96,8 +117,6 @@ class PravahAndroidMessagingManager(
                 }
 
                 override fun onMessageReceived(peerIdStr: String, message: Message) {
-                    // Redundant activations completely removed (F2 Fix). 
-                    // Strictly dispatch to listeners.
                     protocolListeners.forEach { it.onMessageReceived(peerIdStr, message) }
                 }
 
@@ -114,7 +133,8 @@ class PravahAndroidMessagingManager(
         }
     }
 
-    val router = PeerRouter(registry, compositeTransport, connectivityRegistry, pathPolicy)
+    val router = PeerRouter(registry, compositeTransport, connectivityRegistry, pathPolicy, trustManager)
+
     val historyStore: MessageHistoryStore = InMemoryMessageHistoryStore()
     val outbox: DeliveryOutbox = InMemoryDeliveryOutbox()
     val messaging = DefaultApplicationMessagingService(
@@ -172,6 +192,9 @@ class PravahAndroidMessagingManager(
     }
 
     fun connectToTcp(remoteHost: String, remotePort: Int, remotePeerId: PeerId? = null): String {
+        if (remotePeerId != null) {
+            trustPeer(remotePeerId)
+        }
         tcpTransport.connect(remoteHost, remotePort)
         return "$remoteHost:$remotePort"
     }
@@ -185,6 +208,7 @@ class PravahAndroidMessagingManager(
         val cleanMac = remoteMac.removePrefix("bt:").trim().uppercase()
         val connId = "bt:$cleanMac"
         if (remotePeerId != null) {
+            trustPeer(remotePeerId)
             try {
                 sendJoin(remotePeerId, connId)
             } catch (e: Exception) {
@@ -197,6 +221,7 @@ class PravahAndroidMessagingManager(
     fun sendJoin(remotePeerId: PeerId, connectionId: String) {
         val cleanConn = cleanConnId(connectionId)
         registry.register(remotePeerId, cleanConn)
+        trustPeer(remotePeerId)
         val joinMsg = Message(
             MessageType.JOIN, localPeerId.value(),
             "join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
@@ -205,6 +230,7 @@ class PravahAndroidMessagingManager(
     }
 
     fun replyJoin(remotePeerId: PeerId) {
+        trustPeer(remotePeerId)
         val joinMsg = Message(
             MessageType.JOIN, localPeerId.value(),
             "reply-join-${localPeerId.value()}-${remotePeerId.value()}", ByteArray(0)
@@ -216,8 +242,18 @@ class PravahAndroidMessagingManager(
         }
     }
 
+    fun trustPeer(peerId: PeerId) {
+        if (trustManager.getTrustState(peerId) != TrustState.TRUSTED) {
+            trustManager.transitionState(peerId, TrustState.TRUSTED)
+        }
+    }
+
     fun getSessionState(peerIdValue: String): PeerState? {
-        return coordinator.sessionManager.getPeerState(peerIdValue)
+        return sessionManager.getPeerState(peerIdValue)
+    }
+
+    fun getTrustState(peerId: PeerId): TrustState {
+        return trustManager.getTrustState(peerId)
     }
 
     fun isDelivered(messageId: String): Boolean {
@@ -236,10 +272,6 @@ class PravahAndroidMessagingManager(
         return if (connId.startsWith("/")) connId.substring(1) else connId
     }
 
-        /**
-     * Authoritatively drops a specific transport connection for a peer,
-     * closing the underlying physical socket/link and triggering lifecycle cleanup.
-     */
     fun dropTransport(peerId: PeerId, transportScheme: String): Boolean {
         var dropped = false
         connectivityRegistry.lookup(peerId).ifPresent { conn ->
@@ -260,7 +292,6 @@ class PravahAndroidMessagingManager(
                             logger.warning("Error disconnecting transport $transportScheme: ${e.message}")
                         }
                     }
-                    // Ensure local path deactivation
                     conn.addPath(path.deactivate())
                 }
             }
@@ -272,7 +303,6 @@ class PravahAndroidMessagingManager(
         val orphanedPeers = connectivityRegistry.allConnectivities()
             .map { it.peerId() }
             .filter { it.value().startsWith("remote-bt-") && it != authenticatedPeer }
-
         for (orphan in orphanedPeers) {
             connectivityRegistry.lookup(orphan).ifPresent { conn ->
                 for (path in conn.allPaths()) {
@@ -288,4 +318,3 @@ class PravahAndroidMessagingManager(
 
     override fun close() { stop() }
 }
-
