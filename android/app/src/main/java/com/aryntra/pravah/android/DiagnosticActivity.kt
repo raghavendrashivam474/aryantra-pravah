@@ -89,7 +89,9 @@ class DiagnosticActivity : Activity() {
         networkSnapshotPanel = NetworkSnapshotPanel()
         peerPanel = PeerPanel()
         pathPanel = PathPanel()
-        liveWirePanel = LiveWirePanel(tvLog)
+                val svLog: android.widget.ScrollView = findViewById(R.id.svLog)
+        val tvFollowBadge: TextView = findViewById(R.id.tvFollowBadge)
+        liveWirePanel = LiveWirePanel(tvLog, svLog, tvFollowBadge)
         peerContextPanel = PeerContextPanel(tvPeerContext)
         conversationPanel = ConversationPanel(tvConversation)
 
@@ -208,8 +210,8 @@ class DiagnosticActivity : Activity() {
                     messageId = msg.messageId(),
                     sequenceNumber = msg.sequenceNumber(),
                     destinationPeerId = manager.localPeerId.value(),
-                    humanStatus = "✓ Delivered",
-                    networkAwareStatus = "✓ Delivered via Active Path",
+                    humanStatus = "âœ“ Delivered",
+                    networkAwareStatus = "âœ“ Delivered via Active Path",
                     technicalSummary = "Decoded application frame; sequence=${msg.sequenceNumber()}",
                     steps = steps,
                     forensicLog = listOf(
@@ -471,7 +473,7 @@ class DiagnosticActivity : Activity() {
                     messageId = appMsg.messageId(),
                     sequenceNumber = appMsg.sequenceNumber(),
                     destinationPeerId = peer.value(),
-                    humanStatus = if (isDelivered) "✓ Delivered" else "◌ Sending...",
+                    humanStatus = if (isDelivered) "âœ“ Delivered" else "â—Œ Sending...",
                     networkAwareStatus = "Dispatched via Active Route",
                     technicalSummary = "Message sequence=${appMsg.sequenceNumber()}; outbox tracked",
                     steps = steps,

@@ -5,6 +5,7 @@
     android:orientation="vertical"
     android:background="#12121e">
 
+    <!-- Fixed Persistent Header -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -42,6 +43,7 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Scrollable World Surface -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -55,6 +57,7 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
+            <!-- Local Node Status Monospace Bar -->
             <TextView
                 android:id="@+id/tvStatus"
                 android:layout_width="match_parent"
@@ -67,6 +70,7 @@
                 android:fontFamily="monospace"
                 android:layout_marginTop="6dp" />
 
+            <!-- PEER CONTEXT CARD (A.D3 Section 8) -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -88,6 +92,7 @@
                 android:textSize="11sp"
                 android:fontFamily="monospace" />
 
+            <!-- CONVERSATION / HUMAN MESSAGING SURFACE (A.D3 Section 10) -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -110,6 +115,7 @@
                 android:textSize="12sp"
                 android:fontFamily="monospace" />
 
+            <!-- Message Input & Action Row -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -138,6 +144,7 @@
                     android:layout_marginStart="4dp" />
             </LinearLayout>
 
+            <!-- Technical Disclosure Section: Network Controls -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -148,6 +155,7 @@
                 android:paddingTop="10dp"
                 android:paddingBottom="2dp" />
 
+            <!-- Lifecycle Buttons -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -183,6 +191,7 @@
                     android:layout_marginStart="4dp" />
             </LinearLayout>
 
+            <!-- Multi-Path Connect Buttons -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -219,6 +228,7 @@
                     android:layout_marginStart="4dp" />
             </LinearLayout>
 
+            <!-- LIVE NETWORK TOPOLOGY (Preserved Safety Net) -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -240,27 +250,55 @@
                 android:textSize="11sp"
                 android:fontFamily="monospace" />
 
-            <TextView
+            <!-- LIVE WIRE FORENSIC STREAM (A.D3-P1 Bounded Viewport) -->
+            <RelativeLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="-- LIVE WIRE FORENSIC STREAM --"
-                android:textColor="#ffab00"
-                android:textSize="11sp"
-                android:textStyle="bold"
                 android:paddingTop="8dp"
-                android:paddingBottom="2dp" />
+                android:paddingBottom="2dp">
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_alignParentStart="true"
+                    android:text="-- LIVE WIRE FORENSIC STREAM --"
+                    android:textColor="#ffab00"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+                <TextView
+                    android:id="@+id/tvFollowBadge"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_alignParentEnd="true"
+                    android:text="↓ NEW EVENTS"
+                    android:textColor="#00ff88"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:background="#1e3a29"
+                    android:paddingLeft="6dp"
+                    android:paddingRight="6dp"
+                    android:paddingTop="1dp"
+                    android:paddingBottom="1dp"
+                    android:visibility="gone" />
+            </RelativeLayout>
 
-            <TextView
-                android:id="@+id/tvLog"
+            <!-- Bounded Dedicated Scroll Container (150dp fixed viewport height) -->
+            <ScrollView
+                android:id="@+id/svLog"
                 android:layout_width="match_parent"
-                android:layout_height="140dp"
+                android:layout_height="150dp"
                 android:background="#1a1a2e"
                 android:padding="6dp"
-                android:textColor="#a8b2d1"
-                android:textSize="10sp"
-                android:fontFamily="monospace"
-                android:scrollbars="vertical"
-                android:text="System initializing..." />
+                android:fillViewport="true"
+                android:layout_marginBottom="12dp">
+                <TextView
+                    android:id="@+id/tvLog"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:textColor="#a8b2d1"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace"
+                    android:text="System initializing...\n" />
+            </ScrollView>
 
         </LinearLayout>
     </ScrollView>
