@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.security.trust;
+package com.aryntra.pravah.security.trust;
 
 import com.aryntra.pravah.connectivity.*;
 import com.aryntra.pravah.peer.*;
@@ -19,10 +19,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
-import java.util.*;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -36,30 +34,29 @@ class TrustLifecycleIntegrationTest {
     private PeerConnectivityRegistry connectivityRegistry;
     private PeerTrustManager trustManager;
     private PeerRouter peerRouter;
-
     private PeerId localPeerId;
     private IdentityKeyPair localKeyPair;
     private CryptographicIdentity localIdentity;
-
     private PeerId remotePeerId;
     private IdentityKeyPair remoteKeyPair;
     private CryptographicIdentity remoteIdentity;
 
     @BeforeEach
     void setUp() {
+        IdentityGenerator gen = new IdentityGenerator();
         transport = new MockTransport();
         peerRegistry = new PeerRegistry();
-        presenceManager = new PeerPresenceManager();
-        presenceBridge = new PeerPresenceBridge(presenceManager, peerRegistry);
+        presenceManager = new PeerPresenceManager(30_000L);
+        presenceBridge = new PeerPresenceBridge(peerRegistry, presenceManager);
         connectivityRegistry = new PeerConnectivityRegistry();
         trustManager = new PeerTrustManager();
 
         localPeerId = PeerId.of("node-alice");
-        localKeyPair = IdentityGenerator.generate();
+        localKeyPair = gen.generate();
         localIdentity = CryptographicIdentity.fromKeyPair(localPeerId, localKeyPair);
 
         remotePeerId = PeerId.of("node-bob");
-        remoteKeyPair = IdentityGenerator.generate();
+        remoteKeyPair = gen.generate();
         remoteIdentity = CryptographicIdentity.fromKeyPair(remotePeerId, remoteKeyPair);
 
         peerRouter = new PeerRouter(
@@ -78,13 +75,11 @@ class TrustLifecycleIntegrationTest {
         peerRegistry.register(remotePeerId, connId);
         connectivityRegistry.registerPath(remotePeerId, new ConnectivityPath(
                 PathId.of("path-tcp"),
+                remotePeerId,
                 "tcp",
-                new EndpointAddress("127.0.0.1", 9001),
+                EndpointAddress.tcp("127.0.0.1", 9001),
                 PathState.ACTIVE,
-                connId,
-                10,
-                100,
-                0.0
+                connId
         ));
 
         // State is UNKNOWN initially
@@ -125,8 +120,7 @@ class TrustLifecycleIntegrationTest {
         // 1. Bob sends JOIN
         Message joinMsg = new Message(MessageType.JOIN, remotePeerId.value(), "join-1", new byte[0]);
         coordinator.onDataReceived(connId, FrameEncoder.encode(MessageEncoder.encode(joinMsg)));
-
-        assertTrue(peerRegistry.isRegistered(remotePeerId));
+        assertTrue(peerRegistry.contains(remotePeerId));
         assertEquals(TrustState.UNKNOWN, trustManager.getTrustState(remotePeerId));
 
         // 2. Alice issues challenge
@@ -139,7 +133,6 @@ class TrustLifecycleIntegrationTest {
         assertNotNull(challengeFrame);
         Message parsedChalMsg = MessageParser.parse(new FrameDecoder().feed(challengeFrame).get(0));
         assertEquals(MessageType.AUTH_CHALLENGE, parsedChalMsg.type());
-
         AuthenticationChallenge receivedChallenge = AuthWireCodec.decodeChallenge(parsedChalMsg.payload());
 
         // 3. Bob constructs proof and responds
@@ -172,17 +165,16 @@ class TrustLifecycleIntegrationTest {
         AuthenticationChallenge chal = trustManager.issueChallengeForPeer(remotePeerId);
         AuthenticationProof proof = AuthenticationProof.generate(chal, remoteIdentity, remoteKeyPair, trustManager.authService().domain());
         trustManager.evaluateProof(remotePeerId, proof);
-
         assertEquals(TrustState.TRUSTED, trustManager.getTrustState(remotePeerId));
 
         // Setup TCP path
         ConnectivityPath tcpPath = new ConnectivityPath(
                 PathId.of("path-tcp"),
+                remotePeerId,
                 "tcp",
-                new EndpointAddress("192.168.1.10", 9001),
+                EndpointAddress.tcp("192.168.1.10", 9001),
                 PathState.ACTIVE,
-                "conn-tcp",
-                10, 100, 0.0
+                "conn-tcp"
         );
         connectivityRegistry.registerPath(remotePeerId, tcpPath);
 
@@ -194,11 +186,11 @@ class TrustLifecycleIntegrationTest {
         // Attach secondary Bluetooth path
         ConnectivityPath btPath = new ConnectivityPath(
                 PathId.of("path-bt"),
+                remotePeerId,
                 "bluetooth",
-                new EndpointAddress("00:11:22:33:44:55", 0),
+                EndpointAddress.of("bluetooth", "00:11:22:33:44:55", 0),
                 PathState.ACTIVE,
-                "conn-bt",
-                50, 20, 0.0
+                "conn-bt"
         );
         connectivityRegistry.registerPath(remotePeerId, btPath);
 
@@ -243,10 +235,8 @@ class TrustLifecycleIntegrationTest {
                 new com.aryntra.pravah.security.authentication.AuthenticationService(),
                 (identity, result) -> false
         );
-
         AuthenticationChallenge chal = rejectingManager.issueChallengeForPeer(remotePeerId);
         AuthenticationProof proof = AuthenticationProof.generate(chal, remoteIdentity, remoteKeyPair, rejectingManager.authService().domain());
-
         AuthenticationResult result = rejectingManager.evaluateProof(remotePeerId, proof);
         assertEquals(AuthenticationResult.SUCCESS, result);
         assertEquals(TrustState.REJECTED, rejectingManager.getTrustState(remotePeerId));
@@ -258,16 +248,20 @@ class TrustLifecycleIntegrationTest {
         final Map<String, byte[]> lastSentPayload = new ConcurrentHashMap<>();
 
         @Override
+        public String getName() {
+            return "mock";
+        }
+
+        @Override
         public void start() {}
 
         @Override
         public void stop() {}
 
         @Override
-        public void connect(com.aryntra.pravah.connectivity.EndpointAddress address) {}
-
-        @Override
-        public void disconnect(String connectionId) {}
+        public boolean isRunning() {
+            return true;
+        }
 
         @Override
         public void send(String connectionId, byte[] payload) {
@@ -279,7 +273,7 @@ class TrustLifecycleIntegrationTest {
 
         @Override
         public TransportCapabilities getCapabilities() {
-            return new TransportCapabilities(false, 65535, Duration.ofMillis(100), 100);
+            return TransportCapabilities.tcp();
         }
     }
 }

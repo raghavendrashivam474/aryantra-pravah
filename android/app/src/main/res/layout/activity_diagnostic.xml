@@ -1,18 +1,18 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
     android:background="#12121e">
 
-    <!-- Fixed Header -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
         android:padding="12dp"
-        android:paddingBottom="8dp">
+        android:paddingBottom="6dp"
+        android:background="#1a1a2e">
         <ImageView
             android:layout_width="32dp"
             android:layout_height="32dp"
@@ -35,14 +35,13 @@
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="HYBRID MULTI-PATH DIAGNOSTIC NODE"
+                android:text="PERSISTENT MULTI-PATH COCKPIT"
                 android:textColor="#8892b0"
                 android:textSize="9sp"
                 android:fontFamily="monospace" />
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Scrollable Diagnostic Surface -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -56,51 +55,111 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
-            <!-- Node Status Card -->
             <TextView
                 android:id="@+id/tvStatus"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="#1e1e2f"
                 android:padding="8dp"
-                android:text="Status: STOPPED&#10;PeerId: -&#10;TCP Port: - | BT: -"
+                android:text="Status: STOPPED | PeerId: - | TCP: - | BT: -"
                 android:textColor="#e0e0e0"
-                android:textSize="12sp"
-                android:fontFamily="monospace" />
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:layout_marginTop="6dp" />
 
-            <!-- Multi-Path Topology Header -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="-- LIVE NETWORK TOPOLOGY --"
+                android:text="-- ACTIVE PEER CONTEXT --"
                 android:textColor="#00e5ff"
                 android:textSize="11sp"
                 android:textStyle="bold"
-                android:paddingTop="6dp"
+                android:paddingTop="8dp"
                 android:paddingBottom="2dp" />
+
             <TextView
-                android:id="@+id/tvMultiPathTopology"
+                android:id="@+id/tvPeerContext"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:background="#1a2238"
-                android:padding="6dp"
-                android:text="No connected peer paths."
+                android:background="#162238"
+                android:padding="8dp"
+                android:text="No peer selected. Discover or connect to a node to begin."
                 android:textColor="#64ffda"
                 android:textSize="11sp"
                 android:fontFamily="monospace" />
 
-            <!-- Lifecycle Buttons -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="-- CONVERSATION --"
+                android:textColor="#00ff88"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:paddingTop="8dp"
+                android:paddingBottom="2dp" />
+
+            <TextView
+                android:id="@+id/tvConversation"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="80dp"
+                android:background="#1a2238"
+                android:padding="8dp"
+                android:text="No messages yet."
+                android:textColor="#80cbc4"
+                android:textSize="12sp"
+                android:fontFamily="monospace" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal"
                 android:paddingTop="6dp">
+                <EditText
+                    android:id="@+id/etMessage"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:hint="Type message..."
+                    android:textColorHint="#556677"
+                    android:textColor="#ffffff"
+                    android:background="#1e1e2f"
+                    android:padding="8dp"
+                    android:textSize="13sp"
+                    android:singleLine="true" />
+                <Button
+                    android:id="@+id/btnSend"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="SEND"
+                    android:backgroundTint="#00c853"
+                    android:textColor="#ffffff"
+                    android:textSize="12sp"
+                    android:layout_marginStart="4dp" />
+            </LinearLayout>
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="-- NETWORK OPERATIONS --"
+                android:textColor="#ffb74d"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:paddingTop="10dp"
+                android:paddingBottom="2dp" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
                 <Button
                     android:id="@+id/btnStart"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="START"
+                    android:backgroundTint="#00c853"
+                    android:textColor="#ffffff"
                     android:textSize="11sp" />
                 <Button
                     android:id="@+id/btnStop"
@@ -108,93 +167,100 @@
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="STOP"
+                    android:backgroundTint="#d50000"
+                    android:textColor="#ffffff"
                     android:textSize="11sp"
-                    android:enabled="false" />
+                    android:layout_marginStart="4dp" />
                 <Button
                     android:id="@+id/btnDiscover"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
+                    android:layout_weight="1.2"
                     android:text="DISCOVER"
+                    android:backgroundTint="#0091ea"
+                    android:textColor="#ffffff"
                     android:textSize="11sp"
-                    android:enabled="false" />
+                    android:layout_marginStart="4dp" />
             </LinearLayout>
 
-            <!-- Hybrid Connect & Failover Buttons -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="horizontal">
+                android:orientation="horizontal"
+                android:paddingTop="2dp">
                 <Button
                     android:id="@+id/btnConnectTcp"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="CONNECT TCP"
-                    android:textSize="10sp"
-                    android:enabled="false" />
+                    android:backgroundTint="#00b0ff"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp" />
                 <Button
                     android:id="@+id/btnConnectBt"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
                     android:text="CONNECT BT"
-                    android:textSize="10sp"
-                    android:enabled="false" />
+                    android:backgroundTint="#aa00ff"
+                    android:textColor="#ffffff"
+                    android:textSize="11sp"
+                    android:layout_marginStart="4dp" />
                 <Button
                     android:id="@+id/btnSimulateDrop"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="DROP"
-                    android:textSize="10sp"
-                    android:enabled="false" />
-            </LinearLayout>
-
-            <!-- Message Input & Send -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:paddingTop="4dp">
-                <EditText
-                    android:id="@+id/etMessage"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="3"
-                    android:hint="Type payload message..."
+                    android:layout_weight="1.1"
+                    android:text="DROP PATH"
+                    android:backgroundTint="#ff6d00"
                     android:textColor="#ffffff"
-                    android:textColorHint="#888888"
-                    android:textSize="12sp"
-                    android:enabled="false" />
-                <Button
-                    android:id="@+id/btnSend"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:text="SEND"
                     android:textSize="11sp"
-                    android:enabled="false" />
+                    android:layout_marginStart="4dp" />
             </LinearLayout>
 
-            <!-- Event Logging Feed -->
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="-- REAL-TIME EVENT STREAM --"
-                android:textColor="#00ff88"
+                android:text="-- LIVE MULTI-PATH TOPOLOGY --"
+                android:textColor="#00e5ff"
                 android:textSize="11sp"
-                android:paddingTop="6dp" />
+                android:textStyle="bold"
+                android:paddingTop="8dp"
+                android:paddingBottom="2dp" />
+
+            <TextView
+                android:id="@+id/tvMultiPathTopology"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#162238"
+                android:padding="6dp"
+                android:text="No connected peer paths."
+                android:textColor="#64ffda"
+                android:textSize="11sp"
+                android:fontFamily="monospace" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="-- LIVE WIRE FORENSIC STREAM --"
+                android:textColor="#ffab00"
+                android:textSize="11sp"
+                android:textStyle="bold"
+                android:paddingTop="8dp"
+                android:paddingBottom="2dp" />
+
             <TextView
                 android:id="@+id/tvLog"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:background="#090910"
+                android:layout_height="140dp"
+                android:background="#1a1a2e"
                 android:padding="6dp"
-                android:textColor="#bbbbbb"
+                android:textColor="#a8b2d1"
                 android:textSize="10sp"
                 android:fontFamily="monospace"
-                android:minHeight="120dp" />
+                android:scrollbars="vertical"
+                android:text="System initializing..." />
 
         </LinearLayout>
     </ScrollView>

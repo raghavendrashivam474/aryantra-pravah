@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.peer;
+package com.aryntra.pravah.peer;
 
 import com.aryntra.pravah.peer.presence.PeerPresenceBridge;
 import com.aryntra.pravah.protocol.*;

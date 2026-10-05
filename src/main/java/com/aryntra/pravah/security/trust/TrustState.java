@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.security.trust;
+package com.aryntra.pravah.security.trust;
 
 /**
  * Represents the security trust lifecycle state of a peer.

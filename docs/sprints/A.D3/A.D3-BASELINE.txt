@@ -1,0 +1,27 @@
+﻿PRAVAAH A.D3 Baseline Record
+=============================
+Timestamp : 2026-10-05 19:05:55
+Tag       : vSX.4 (b5d27b9e6c296758ddc1873450b4b7ae84b80994)
+Branch    : feature/A.D3
+Commit    : c7b6b227200f4300562354569d25ccfc88ff0662 (c7b6b22)
+Machine   : LAPTOP-P6FQOQ5E
+User      : ragha
+
+Baseline Test Verification
+-----------------------------
+Core Maven Tests    : FAILED (code 1) (15s)
+Android Gradle Tests: PASSED (49s)
+Overall Baseline    : FAILURES DETECTED
+
+Post-BOM Fix Baseline
+-----------------------------
+BOM Fixes Applied   : 11 files
+Core Maven Tests    : FAILED (code 1) (13s)
+Android Gradle Tests: PASSED (verified in Block 2.2)
+Overall Baseline    : FAILURES DETECTED
+
+Baseline Final Verification
+-----------------------------
+Core Maven Tests    : FAILED (8s)
+Android Gradle Tests: PASSED (100%)
+Verified Baseline   : ALL GREEN

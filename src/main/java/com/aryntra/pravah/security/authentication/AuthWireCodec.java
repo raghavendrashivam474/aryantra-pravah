@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.security.authentication;
+package com.aryntra.pravah.security.authentication;
 
 import com.aryntra.pravah.peer.PeerId;
 import com.aryntra.pravah.security.identity.CryptographicIdentity;

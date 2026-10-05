@@ -1,4 +1,4 @@
-﻿package com.aryntra.pravah.protocol;
+package com.aryntra.pravah.protocol;
 
 /**
  * Supported Pravah protocol message types.
