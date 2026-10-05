@@ -30,3 +30,6 @@ replay_pid*
 Thumbs.db
 ehthumbs.db
 Desktop.ini
+
+# Build artifacts
+*.apk

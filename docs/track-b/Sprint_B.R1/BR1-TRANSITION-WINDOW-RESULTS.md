@@ -62,7 +62,6 @@ BT=CANDIDATE
 | | |
 |---|---|---|
 |--- Bucket 1 ---------|------- Bucket 2 ----------|--- Bucket 3 ---> |
-| Pre-failure (M1-M3) | Transition Gap (M4-M7) | Post (M8-M10) |
 ---
 ## Observations
 
