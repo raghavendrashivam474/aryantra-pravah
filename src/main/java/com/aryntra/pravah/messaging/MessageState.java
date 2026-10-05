@@ -5,6 +5,7 @@ package com.aryntra.pravah.messaging;
  */
 public enum MessageState {
     CREATED,
+    BUFFERED,
     SENT,
     DELIVERED,
     FAILED

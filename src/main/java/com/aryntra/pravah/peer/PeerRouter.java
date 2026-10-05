@@ -87,7 +87,7 @@ public class PeerRouter {
      * @param message     the protocol message to send (must not be null)
      * @throws PeerRoutingException if no path succeeds or peer is not reachable
      */
-    public void send(PeerId destination, Message message) {
+    public boolean send(PeerId destination, Message message) {
         Objects.requireNonNull(destination, "destination must not be null");
         Objects.requireNonNull(message, "message must not be null");
         byte[] encoded = MessageEncoder.encode(message);
@@ -109,7 +109,7 @@ public class PeerRouter {
                     if (connectionId != null && !connectionId.isBlank()) {
                         try {
                             transport.send(connectionId, framed);
-                            return; // Successfully sent
+                            return true; // Successfully dispatched to transport
                         } catch (Exception ex) {
                             // Transport write failed on this path: deactivate path in registry so future routing excludes it
                             peerConn.addPath(path.deactivate());
@@ -128,7 +128,7 @@ public class PeerRouter {
                     boolean buffered = transitionBuffer.offer(destination, message, framed);
                     if (buffered) {
                         LOGGER.info(() -> "Transition-window buffer: captured message " + message.messageId() + " for peer " + destination.value());
-                        return; // Buffered successfully, complete execution gracefully
+                        return false; // Buffered during transition window
                     }
                 }
             }
@@ -146,6 +146,7 @@ public class PeerRouter {
         String connectionId = record.connectionId();
         try {
             transport.send(connectionId, framed);
+            return true; // Legacy transport write succeeded
         } catch (PeerRoutingException pre) {
             throw pre;
         } catch (Exception ex) {
@@ -177,10 +178,10 @@ public class PeerRouter {
         return record.connectionId();
     }
 
-    public void send(PeerId sender, PeerId destination, String messageId, byte[] payload) {
+    public boolean send(PeerId sender, PeerId destination, String messageId, byte[] payload) {
         Objects.requireNonNull(sender, "sender must not be null");
         Message message = new Message(MessageType.MESSAGE, sender.value(), messageId, payload);
-        send(destination, message);
+        return send(destination, message);
     }
 
     public PeerRegistry registry() { return registry; }
