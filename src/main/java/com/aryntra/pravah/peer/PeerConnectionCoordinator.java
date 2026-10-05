@@ -1,27 +1,39 @@
-package com.aryntra.pravah.peer;
+﻿package com.aryntra.pravah.peer;
 
 import com.aryntra.pravah.peer.presence.PeerPresenceBridge;
 import com.aryntra.pravah.protocol.*;
+import com.aryntra.pravah.security.authentication.AuthWireCodec;
+import com.aryntra.pravah.security.authentication.AuthenticationChallenge;
+import com.aryntra.pravah.security.authentication.AuthenticationProof;
+import com.aryntra.pravah.security.authentication.AuthenticationResult;
+import com.aryntra.pravah.security.identity.CryptographicIdentity;
+import com.aryntra.pravah.security.identity.IdentityKeyPair;
+import com.aryntra.pravah.security.trust.PeerTrustManager;
+import com.aryntra.pravah.security.trust.TrustState;
 import com.aryntra.pravah.transport.Transport;
 import com.aryntra.pravah.transport.TransportListener;
 
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
  * Coordinates transport-level connections, protocol parsing, peer identity mapping,
- * and presence lifecycle transitions.
+ * presence lifecycle transitions, and trust-aware authentication handshakes.
  *
  * <p>Preserves strict architectural boundaries:
  * <ul>
  *   <li>Transport remains completely unaware of {@link PeerId} or protocol framing.</li>
- *   <li>Presence remains separate from protocol session state.</li>
- *   <li>JOIN messages act as the single source of truth for logical peer identity.</li>
+ *   <li>Presence tracks physical connection state.</li>
+ *   <li>Trust tracks cryptographic identity authentication and policy decisions.</li>
+ *   <li>JOIN messages announce presence; AUTH_CHALLENGE and AUTH_PROOF verify identity.</li>
  * </ul>
+ *
+ * <p>SX.4 — Trust-Aware Connection Lifecycle</p>
  */
 public class PeerConnectionCoordinator implements TransportListener {
 
@@ -31,6 +43,9 @@ public class PeerConnectionCoordinator implements TransportListener {
     private final PeerRegistry registry;
     private final PeerPresenceBridge presenceBridge;
     private final ProtocolSessionManager sessionManager;
+    private final PeerTrustManager trustManager;
+    private final IdentityKeyPair localKeyPair;
+    private final CryptographicIdentity localIdentity;
 
     private final ConcurrentHashMap<String, FrameDecoder> decoders = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PeerId> connectionToPeer = new ConcurrentHashMap<>();
@@ -41,19 +56,31 @@ public class PeerConnectionCoordinator implements TransportListener {
     public PeerConnectionCoordinator(Transport transport,
                                      PeerRegistry registry,
                                      PeerPresenceBridge presenceBridge) {
-        this(transport, registry, presenceBridge, new ProtocolSessionManager());
+        this(transport, registry, presenceBridge, new ProtocolSessionManager(), null, null, null);
     }
 
     public PeerConnectionCoordinator(Transport transport,
                                      PeerRegistry registry,
                                      PeerPresenceBridge presenceBridge,
                                      ProtocolSessionManager sessionManager) {
+        this(transport, registry, presenceBridge, sessionManager, null, null, null);
+    }
+
+    public PeerConnectionCoordinator(Transport transport,
+                                     PeerRegistry registry,
+                                     PeerPresenceBridge presenceBridge,
+                                     ProtocolSessionManager sessionManager,
+                                     PeerTrustManager trustManager,
+                                     IdentityKeyPair localKeyPair,
+                                     CryptographicIdentity localIdentity) {
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
         this.presenceBridge = Objects.requireNonNull(presenceBridge, "presenceBridge must not be null");
         this.sessionManager = Objects.requireNonNull(sessionManager, "sessionManager must not be null");
+        this.trustManager = trustManager;
+        this.localKeyPair = localKeyPair;
+        this.localIdentity = localIdentity;
 
-        // Forward internal session events to downstream listener
         this.sessionManager.setListener(new ProtocolListener() {
             @Override
             public void onPeerJoined(String peerIdStr, Message message) {
@@ -91,6 +118,10 @@ public class PeerConnectionCoordinator implements TransportListener {
         return sessionManager;
     }
 
+    public PeerTrustManager getTrustManager() {
+        return trustManager;
+    }
+
     public Optional<PeerId> getPeerIdForConnection(String connectionId) {
         if (connectionId == null) return Optional.empty();
         return Optional.ofNullable(connectionToPeer.get(connectionId));
@@ -99,6 +130,28 @@ public class PeerConnectionCoordinator implements TransportListener {
     public Optional<String> getConnectionIdForPeer(PeerId peerId) {
         if (peerId == null) return Optional.empty();
         return Optional.ofNullable(peerToConnection.get(peerId));
+    }
+
+    /**
+     * Issues an authentication challenge to the specified remote peer over a given connection path.
+     */
+    public boolean initiateAuthentication(PeerId peerId, String connectionId) {
+        if (trustManager == null || connectionId == null) {
+            return false;
+        }
+        try {
+            AuthenticationChallenge challenge = trustManager.issueChallengeForPeer(peerId);
+            byte[] payload = AuthWireCodec.encodeChallenge(challenge);
+            String localSender = localIdentity != null ? localIdentity.peerId().value() : "local";
+            Message challengeMsg = new Message(MessageType.AUTH_CHALLENGE, localSender, "chal-" + UUID.randomUUID(), payload);
+            byte[] framed = FrameEncoder.encode(MessageEncoder.encode(challengeMsg));
+            transport.send(connectionId, framed);
+            LOGGER.info(() -> "Dispatched AUTH_CHALLENGE " + challenge.challengeId() + " to peer " + peerId.value() + " via " + connectionId);
+            return true;
+        } catch (Exception ex) {
+            LOGGER.log(Level.WARNING, "Failed to dispatch AUTH_CHALLENGE to " + peerId.value(), ex);
+            return false;
+        }
     }
 
     @Override
@@ -140,7 +193,6 @@ public class PeerConnectionCoordinator implements TransportListener {
         if (peerId != null) {
             peerToConnection.remove(peerId, connectionId);
 
-            // Re-point primary connection mapping if other active connections remain for this peer
             boolean hasOtherConnections = connectionToPeer.containsValue(peerId);
             if (hasOtherConnections) {
                 for (var entry : connectionToPeer.entrySet()) {
@@ -151,10 +203,8 @@ public class PeerConnectionCoordinator implements TransportListener {
                 }
             }
 
-            // Surgically close only this specific path in the presence bridge
             presenceBridge.handleConnectionClosed(peerId, connectionId);
 
-            // Reset protocol session only if no active connections remain
             if (!hasOtherConnections) {
                 sessionManager.resetPeer(peerId.value());
                 LOGGER.info(() -> "Peer disconnected and unregistered: " + peerId.value());
@@ -167,37 +217,68 @@ public class PeerConnectionCoordinator implements TransportListener {
     private void handleInboundMessage(String connectionId, Message message) {
         if (message.type() == MessageType.JOIN) {
             PeerId peerId = PeerId.of(message.senderId());
-
-            // Bind connection <-> PeerId
             connectionToPeer.put(connectionId, peerId);
             peerToConnection.put(peerId, connectionId);
-
-            // Notify Presence Bridge FIRST (promotes to CONNECTED & updates PeerRegistry)
             presenceBridge.handlePeerConnected(peerId, connectionId);
 
-            // If peer is not yet joined in session manager, process JOIN; if already joined,
-            // multi-path attachment succeeds idempotently
             if (!sessionManager.isPeerJoined(peerId.value())) {
                 sessionManager.processMessage(message);
-                LOGGER.info(() -> "Peer successfully authenticated and connected: " + peerId.value());
+                LOGGER.info(() -> "Peer presence registered via JOIN: " + peerId.value());
             } else {
-                LOGGER.info(() -> "Secondary path authenticated for existing peer session: " + peerId.value() + " via " + connectionId);
+                LOGGER.info(() -> "Secondary path connected for existing peer session: " + peerId.value() + " via " + connectionId);
             }
+        } else if (message.type() == MessageType.AUTH_CHALLENGE) {
+            handleInboundAuthChallenge(connectionId, message);
+        } else if (message.type() == MessageType.AUTH_PROOF) {
+            handleInboundAuthProof(connectionId, message);
         } else if (message.type() == MessageType.LEAVE) {
             PeerId peerId = PeerId.of(message.senderId());
-
-            // Unbind and notify presence bridge FIRST
             connectionToPeer.remove(connectionId);
             peerToConnection.remove(peerId, connectionId);
             presenceBridge.handlePeerDisconnected(peerId);
-
-            // Process protocol state transition
             sessionManager.processMessage(message);
-
             LOGGER.info(() -> "Peer successfully left session: " + peerId.value());
         } else {
-            // Standard MESSAGE or other protocol messages
             sessionManager.processMessage(message);
+        }
+    }
+
+    private void handleInboundAuthChallenge(String connectionId, Message message) {
+        if (localKeyPair == null || localIdentity == null) {
+            LOGGER.fine("Received AUTH_CHALLENGE but no local identity configured; ignoring");
+            return;
+        }
+        try {
+            AuthenticationChallenge challenge = AuthWireCodec.decodeChallenge(message.payload());
+            String domain = trustManager != null ? trustManager.authService().domain() : AuthenticationProof.DEFAULT_DOMAIN;
+            AuthenticationProof proof = AuthenticationProof.generate(challenge, localIdentity, localKeyPair, domain);
+            byte[] proofPayload = AuthWireCodec.encodeProof(proof);
+
+            Message proofMsg = new Message(MessageType.AUTH_PROOF, localIdentity.peerId().value(), "proof-" + UUID.randomUUID(), proofPayload);
+            byte[] framed = FrameEncoder.encode(MessageEncoder.encode(proofMsg));
+            transport.send(connectionId, framed);
+            LOGGER.info(() -> "Responded to AUTH_CHALLENGE " + challenge.challengeId() + " with AUTH_PROOF via " + connectionId);
+        } catch (Exception ex) {
+            LOGGER.log(Level.WARNING, "Error responding to AUTH_CHALLENGE from " + connectionId + ": " + ex.getMessage(), ex);
+        }
+    }
+
+    private void handleInboundAuthProof(String connectionId, Message message) {
+        if (trustManager == null) {
+            LOGGER.fine("Received AUTH_PROOF but no PeerTrustManager configured; ignoring");
+            return;
+        }
+        try {
+            AuthenticationProof proof = AuthWireCodec.decodeProof(message.payload());
+            PeerId peerId = PeerId.of(message.senderId());
+            AuthenticationResult result = trustManager.evaluateProof(peerId, proof);
+            LOGGER.info(() -> "Processed AUTH_PROOF from " + peerId.value() + " with result: " + result);
+        } catch (Exception ex) {
+            LOGGER.log(Level.WARNING, "Error processing AUTH_PROOF from " + connectionId + ": " + ex.getMessage(), ex);
+            PeerId peerId = connectionToPeer.get(connectionId);
+            if (peerId != null) {
+                trustManager.transitionState(peerId, TrustState.REJECTED);
+            }
         }
     }
 }

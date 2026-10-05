@@ -1,4 +1,4 @@
-package com.aryntra.pravah.peer;
+﻿package com.aryntra.pravah.peer;
 
 import com.aryntra.pravah.connectivity.ConnectivityPath;
 import com.aryntra.pravah.connectivity.PathSelectionPolicy;
@@ -8,7 +8,10 @@ import com.aryntra.pravah.protocol.FrameEncoder;
 import com.aryntra.pravah.protocol.Message;
 import com.aryntra.pravah.protocol.MessageEncoder;
 import com.aryntra.pravah.protocol.MessageType;
+import com.aryntra.pravah.security.trust.PeerTrustManager;
+import com.aryntra.pravah.security.trust.TrustState;
 import com.aryntra.pravah.transport.Transport;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -16,42 +19,62 @@ import java.util.Optional;
 import java.util.logging.Logger;
 
 /**
- * Resolves logical peer destinations into active transport connections and dispatches framed messages.
+ * Resolves logical peer destinations into active transport connections and dispatches framed messages,
+ * enforcing trust-aware routing boundaries.
  *
  * <p>PeerRouter serves as the bridge between application-level peer-oriented communication
  * and connection-oriented transport delivery.</p>
+ *
+ * <p>Invariants:
+ * <ul>
+ *   <li>Only peers in {@link TrustState#TRUSTED} are eligible for {@link MessageType#MESSAGE} delivery when trust management is active.</li>
+ *   <li>Protocol handshake messages ({@code JOIN}, {@code LEAVE}, {@code AUTH_CHALLENGE}, {@code AUTH_PROOF}) are exempt from trust gating.</li>
+ *   <li>Path failure does not equal trust failure (multi-path resilience).</li>
+ * </ul>
+ * </p>
+ *
+ * <p>SX.4 — Trust-Aware Connection Lifecycle</p>
  */
 public class PeerRouter {
+
     private static final Logger LOGGER = Logger.getLogger(PeerRouter.class.getName());
 
     private final PeerRegistry registry;
     private final Transport transport;
-    private final PeerConnectivityRegistry connectivityRegistry; // nullable for backward compat
+    private final PeerConnectivityRegistry connectivityRegistry;
     private final PathSelectionPolicy selectionPolicy;
     private final TransitionBuffer transitionBuffer;
+    private final PeerTrustManager trustManager;
 
     public PeerRouter(PeerRegistry registry, Transport transport) {
-        this(registry, transport, null, PathSelectionPolicy.defaultPolicy());
+        this(registry, transport, null, PathSelectionPolicy.defaultPolicy(), null);
     }
 
     public PeerRouter(PeerRegistry registry, Transport transport, PeerConnectivityRegistry connectivityRegistry) {
-        this(registry, transport, connectivityRegistry, PathSelectionPolicy.defaultPolicy());
+        this(registry, transport, connectivityRegistry, PathSelectionPolicy.defaultPolicy(), null);
     }
 
     public PeerRouter(PeerRegistry registry, Transport transport, PeerConnectivityRegistry connectivityRegistry, PathSelectionPolicy selectionPolicy) {
+        this(registry, transport, connectivityRegistry, selectionPolicy, null);
+    }
+
+    public PeerRouter(PeerRegistry registry,
+                      Transport transport,
+                      PeerConnectivityRegistry connectivityRegistry,
+                      PathSelectionPolicy selectionPolicy,
+                      PeerTrustManager trustManager) {
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
         this.transport = Objects.requireNonNull(transport, "transport must not be null");
         this.connectivityRegistry = connectivityRegistry;
         this.selectionPolicy = Objects.requireNonNull(selectionPolicy, "selectionPolicy must not be null");
+        this.trustManager = trustManager;
         this.transitionBuffer = new TransitionBuffer();
 
-        // Wire up state callbacks to flush the buffer on path activation or clear on full disconnect
         if (this.connectivityRegistry != null) {
             this.connectivityRegistry.addPathStateListener((peerId, path, prev) -> {
                 if (path.state() == com.aryntra.pravah.connectivity.PathState.ACTIVE) {
                     LOGGER.info(() -> "Path activated for peer " + peerId.value() + " via " + path.transportName() + ". Flushing transition buffer.");
                     this.transitionBuffer.flushForPeer(peerId, (dest, payload) -> {
-                        // Deliver flushed messages using authoritative path selection policy
                         Optional<PeerConnectivity> maybeConn = this.connectivityRegistry.lookup(dest);
                         if (maybeConn.isPresent()) {
                             List<ConnectivityPath> active = maybeConn.get().activePaths();
@@ -61,12 +84,10 @@ public class PeerRouter {
                                 return;
                             }
                         }
-                        // Legacy fallback inside flush callback
                         String fallbackConnId = this.resolveConnectionId(dest);
                         this.transport.send(fallbackConnId, payload);
                     });
                 } else if (path.state() == com.aryntra.pravah.connectivity.PathState.INACTIVE) {
-                    // Evict/Discard messages if all candidate and active paths are completely gone
                     Optional<PeerConnectivity> maybeConn = this.connectivityRegistry.lookup(peerId);
                     if (maybeConn.isPresent()) {
                         PeerConnectivity pc = maybeConn.get();
@@ -81,15 +102,26 @@ public class PeerRouter {
     }
 
     /**
-     * Sends a logical protocol message to a specific peer destination with automatic multi-path failover.
+     * Sends a logical protocol message to a specific peer destination with automatic multi-path failover
+     * and trust verification.
      *
      * @param destination the destination PeerId (must not be null)
      * @param message     the protocol message to send (must not be null)
-     * @throws PeerRoutingException if no path succeeds or peer is not reachable
+     * @return true if dispatched or buffered
+     * @throws PeerRoutingException if trust verification fails or destination unreachable
      */
     public boolean send(PeerId destination, Message message) {
         Objects.requireNonNull(destination, "destination must not be null");
         Objects.requireNonNull(message, "message must not be null");
+
+        // Trust Check: Application messages require TRUSTED state
+        if (trustManager != null && message.type() == MessageType.MESSAGE) {
+            TrustState state = trustManager.getTrustState(destination);
+            if (state != TrustState.TRUSTED) {
+                throw new PeerRoutingException("Cannot route application message: peer " + destination.value() + " is not TRUSTED (current trust state=" + state + ")");
+            }
+        }
+
         byte[] encoded = MessageEncoder.encode(message);
         byte[] framed = FrameEncoder.encode(encoded);
 
@@ -109,26 +141,20 @@ public class PeerRouter {
                     if (connectionId != null && !connectionId.isBlank()) {
                         try {
                             transport.send(connectionId, framed);
-                            return true; // Successfully dispatched to transport
+                            return true;
                         } catch (Exception ex) {
-                            // Transport write failed on this path: deactivate path in registry so future routing excludes it
                             peerConn.addPath(path.deactivate());
-                            // Remove from remaining candidates for this send attempt
                             availablePaths.remove(path);
                         }
                     } else {
                         availablePaths.remove(path);
                     }
                 }
-
-                // --- B.R2: Bounded Transition-Window Buffer Hook ---
-                // If we reach here, we attempted to send via multi-path, but no active path was usable.
-                // If there are expected candidate paths, we buffer the message during this transition window.
                 if (!peerConn.candidatePaths().isEmpty()) {
                     boolean buffered = transitionBuffer.offer(destination, message, framed);
                     if (buffered) {
                         LOGGER.info(() -> "Transition-window buffer: captured message " + message.messageId() + " for peer " + destination.value());
-                        return false; // Buffered during transition window
+                        return false;
                     }
                 }
             }
@@ -146,7 +172,7 @@ public class PeerRouter {
         String connectionId = record.connectionId();
         try {
             transport.send(connectionId, framed);
-            return true; // Legacy transport write succeeded
+            return true;
         } catch (PeerRoutingException pre) {
             throw pre;
         } catch (Exception ex) {
@@ -189,4 +215,5 @@ public class PeerRouter {
     public PeerConnectivityRegistry connectivityRegistry() { return connectivityRegistry; }
     public PathSelectionPolicy selectionPolicy() { return selectionPolicy; }
     public TransitionBuffer transitionBuffer() { return transitionBuffer; }
+    public PeerTrustManager trustManager() { return trustManager; }
 }
